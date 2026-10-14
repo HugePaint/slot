@@ -1,15 +1,9 @@
-//! EGL on the framebuffer, which is how the device presents. libEGL and libGLESv2 are opened
-//! at runtime for the same reason the libretro core is: neither exists on the build machine,
-//! and a link time dependency on either would make the cross build need the device rootfs.
-
 use std::ffi::{c_char, c_void, CString};
 
 use libloading::Library;
 
 use crate::surface::{GfxError, Surface};
 
-/// What the panel is if the framebuffer will not say. The RG35XXSP is 640x480 and the RG SP
-/// is expected to be, but the surface is sized from the driver wherever it answers.
 const FALLBACK_PANEL: (u32, u32) = (720, 480);
 
 const FB0: &str = "/sys/class/graphics/fb0";
@@ -58,12 +52,9 @@ struct Egl {
     get_proc_address: GetProcAddress,
     get_error: GetError,
     terminate: Terminate,
-    /// Last, so the symbols above are still valid while the rest of the struct drops.
     _lib: Library,
 }
 
-/// Mali's fbdev EGL takes a pointer to this as its native window and keeps reading it, so it
-/// outlives the call that made it rather than living on the stack.
 #[repr(C)]
 struct FbdevWindow {
     width: u16,
@@ -72,9 +63,6 @@ struct FbdevWindow {
 
 pub struct FbdevSurface {
     egl: Egl,
-    /// Core GLES entry points come from here. Mali's `eglGetProcAddress` answers for
-    /// extensions and returns null for the rest, which would leave the loader with a
-    /// program it cannot draw.
     gles: Library,
     display: Ptr,
     surface: Ptr,
@@ -83,11 +71,21 @@ pub struct FbdevSurface {
     _window: Box<FbdevWindow>,
 }
 
-/// `/sys/class/graphics/fb0/modes`, printed as `<name>:<w>x<h><p|i>-<hz>`, and the panel as
-/// the driver is actually scanning it out.
+const FBIOGET_VSCREENINFO: std::ffi::c_ulong = 0x4600;
+
+extern "C" {
+    fn ioctl(fd: i32, request: std::ffi::c_ulong, ...) -> i32;
+}
+
+fn visible_size() -> Option<(u32, u32)> {
+    use std::os::unix::io::AsRawFd;
+    let fb = std::fs::File::open("/dev/fb0").ok()?;
+    let mut info = [0u32; 40];
+    let rc = unsafe { ioctl(fb.as_raw_fd(), FBIOGET_VSCREENINFO, info.as_mut_ptr()) };
+    (rc == 0 && info[0] > 0 && info[1] > 0).then_some((info[0], info[1]))
+}
+
 pub fn panel_mode(text: &str) -> Option<(u32, u32)> {
-    // The name is optional and the trailer says how it is scanned and how fast. Only the size
-    // is wanted, and it is the one part every driver spells the same way.
     let body = text.lines().next()?.rsplit(':').next()?;
     let (w, rest) = body.split_once('x')?;
     let h: String = rest.chars().take_while(char::is_ascii_digit).collect();
@@ -95,17 +93,12 @@ pub fn panel_mode(text: &str) -> Option<(u32, u32)> {
     (w > 0 && h > 0).then_some((w, h))
 }
 
-/// `/sys/class/graphics/fb0/virtual_size`, which the driver prints as `width,height`. This is
-/// what was allocated rather than what is shown: a double buffered panel reports two screens
-/// of height here, so it is a last resort behind the mode.
 pub fn panel_size(text: &str) -> Option<(u32, u32)> {
     let (w, h) = text.trim().split_once(',')?;
     let (w, h) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
     (w > 0 && h > 0).then_some((w, h))
 }
 
-/// EGL refuses a request by returning false with nothing queued, so the code read back is
-/// EGL_SUCCESS. Printing it as an error number sends bring-up after a fault that never was.
 pub fn egl_error(what: &str, code: i32) -> GfxError {
     match code {
         EGL_SUCCESS => GfxError::Context(format!("{what}: refused, egl flagged nothing")),
@@ -117,8 +110,6 @@ fn open(name: &str) -> Result<Library, GfxError> {
     unsafe { Library::new(name) }.map_err(|e| GfxError::Context(format!("{name}: {e}")))
 }
 
-/// The symbol's address, copied out of the borrow. Every one of these outlives the call
-/// because the `Library` it came from is owned for the life of the surface.
 unsafe fn sym<T: Copy>(lib: &Library, name: &str) -> Result<T, GfxError> {
     lib.get::<T>(name.as_bytes())
         .map(|s| *s)
@@ -156,16 +147,14 @@ impl Egl {
 impl FbdevSurface {
     pub fn new() -> Result<Self, GfxError> {
         let attr = |name: &str| std::fs::read_to_string(format!("{FB0}/{name}")).ok();
-        // The mode in use, then the modes on offer, then what was allocated. `mode` is empty
-        // on drivers that never implemented it, and `virtual_size` describes the scrollback
-        // rather than the screen: sizing a window from it asks for a surface half of which is
-        // off the bottom of the panel.
         let hint = attr("mode")
             .as_deref()
             .and_then(panel_mode)
             .or_else(|| attr("modes").as_deref().and_then(panel_mode))
+            .or_else(visible_size)
             .or_else(|| attr("virtual_size").as_deref().and_then(panel_size))
             .unwrap_or(FALLBACK_PANEL);
+        eprintln!("slot: fb0 hint {}x{}", hint.0, hint.1);
         FbdevSurface::open(hint)
     }
 
@@ -213,9 +202,6 @@ impl FbdevSurface {
                 height: hint.1 as u16,
             });
             let native = &mut *window as *mut FbdevWindow as Ptr;
-            // A driver that wants no native window at all takes null, and one that wants the
-            // fbdev struct takes the pointer. Which of the two this Mali is has never been
-            // checked on hardware, so both are tried before giving up.
             let mut surface =
                 (egl.create_window_surface)(display, config, native, std::ptr::null());
             if surface.is_null() {
@@ -242,8 +228,6 @@ impl FbdevSurface {
             if (egl.make_current)(display, surface, surface, context) == 0 {
                 return Err(egl.fail("eglMakeCurrent"));
             }
-            // Present is locked to the panel; the GBA to panel drift is absorbed by audio
-            // rate control, exactly as it is on the host.
             (egl.swap_interval)(display, 1);
             let size = query_size(&egl, display, surface).unwrap_or(hint);
             Ok(FbdevSurface {
@@ -297,9 +281,6 @@ impl Surface for FbdevSurface {
         let Ok(c) = CString::new(name) else {
             return std::ptr::null();
         };
-        // The library first. Mali's eglGetProcAddress answers for extensions and returns null
-        // for core GLES entry points, which would leave the loader with a program it cannot
-        // draw a single triangle with.
         let exported = unsafe { self.gles.get::<unsafe extern "C" fn()>(name.as_bytes()) };
         match exported {
             Ok(f) => *f as *const c_void,

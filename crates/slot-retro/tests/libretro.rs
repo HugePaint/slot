@@ -2,8 +2,6 @@ use slot_retro::{ButtonMask, LibretroCore, RetroCore, GBA_H, GBA_W};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// libretro cores keep their state in dylib globals, so two live cores over one dylib is
-/// not a supported configuration and the tests must not overlap.
 static CORE_LOCK: Mutex<()> = Mutex::new(());
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {
@@ -22,8 +20,6 @@ fn test_core() -> Option<LibretroCore> {
     Some(LibretroCore::open(&p).expect("vendored core is present but would not open"))
 }
 
-/// The one real `gba_bios.bin` in the tree. Without it mGBA falls back to its own HLE bios,
-/// which has no boot animation to play whatever the core is told about skipping it.
 fn core_with_bios() -> Option<LibretroCore> {
     let p = dylib();
     let bios = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdcard/BIOS");
@@ -31,39 +27,23 @@ fn core_with_bios() -> Option<LibretroCore> {
         return None;
     }
     Some(
-        LibretroCore::open_with(&p, &bios, &bios)
+        LibretroCore::open_with(&p, &bios, &bios, &[])
             .expect("vendored core is present but would not open"),
     )
 }
 
-/// Sets mode 3 and writes a frame counter into the first pixel once per vblank, so
-/// consecutive frames differ and a savestate has both registers and VRAM worth restoring.
-/// The counter is vblank paced rather than free running because a free running one is
-/// sensitive to single cycle drift across a savestate.
 fn test_rom() -> PathBuf {
     const CODE: [u32; 15] = [
-        0xe3a00404, // mov  r0, #0x04000000
-        0xe3a01c04, // mov  r1, #0x400
-        0xe3811003, // orr  r1, r1, #3
-        0xe5801000, // str  r1, [r0]          DISPCNT: mode 3, BG2 on
-        0xe3a02406, // mov  r2, #0x06000000
-        0xe3a03000, // mov  r3, #0
-        0xe1d040b6, // vb:  ldrh r4, [r0, #6] VCOUNT
-        0xe35400a0, //      cmp  r4, #160
-        0x1afffffc, //      bne  vb
-        0xe2833001, //      add  r3, r3, #1
-        0xe1c230b0, //      strh r3, [r2]
-        0xe1d040b6, // dr:  ldrh r4, [r0, #6]
-        0xe35400a0, //      cmp  r4, #160
-        0x0afffffc, //      beq  dr
-        0xeafffff6, //      b    vb
+        0xe3a00404, 0xe3a01c04, 0xe3811003, 0xe5801000, 0xe3a02406, 0xe3a03000, 0xe1d040b6,
+        0xe35400a0, 0x1afffffc, 0xe2833001, 0xe1c230b0, 0xe1d040b6, 0xe35400a0, 0x0afffffc,
+        0xeafffff6,
     ];
     let mut rom = vec![0u8; 0x8000];
-    rom[0..4].copy_from_slice(&0xea00002eu32.to_le_bytes()); // b 0xc0
+    rom[0..4].copy_from_slice(&0xea00002eu32.to_le_bytes());
     rom[0xa0..0xac].copy_from_slice(b"SLOT TEST\0\0\0");
     rom[0xac..0xb0].copy_from_slice(b"SLTE");
     rom[0xb0..0xb2].copy_from_slice(b"00");
-    rom[0xb2] = 0x96; // fixed header byte, cores sniff it to identify a GBA rom
+    rom[0xb2] = 0x96;
     let sum = rom[0xa0..0xbd].iter().fold(0u8, |a, b| a.wrapping_add(*b));
     rom[0xbd] = 0u8.wrapping_sub(sum).wrapping_sub(0x19);
     for (i, w) in CODE.iter().enumerate() {
@@ -75,12 +55,6 @@ fn test_rom() -> PathBuf {
     p
 }
 
-/// The same rom carrying a cart header logo the bios will accept. Everything above the
-/// header is what `test_rom` builds; the logo is 156 bytes of Nintendo's, so it is lifted
-/// off a cart on the card rather than checked in, and there is nothing to run without one.
-///
-/// A bios that does not recognise the logo skips itself and boots the cart anyway, which is
-/// what every other test in this file relies on.
 fn logo_rom() -> Option<PathBuf> {
     let games = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdcard/Games");
     let logo = std::fs::read_dir(games).ok()?.find_map(|e| {
@@ -146,11 +120,6 @@ fn audio_arrives_at_roughly_the_reported_sample_rate() {
     );
 }
 
-/// A clean start has to show the Nintendo logo and the chime, so mGBA must not be left on
-/// its own default for `mgba_skip_bios`.
-///
-/// The rom fills the screen with black the moment it runs and the boot animation is a white
-/// one, so half a second in the screen itself says which of the two is up.
 #[test]
 fn the_bios_intro_plays_when_a_bios_is_present() {
     let _g = lock();
@@ -170,5 +139,70 @@ fn the_bios_intro_plays_when_a_bios_is_present() {
     assert!(
         lit * 2 > all,
         "{lit} of {all} pixels are lit: the rom is already painting and the intro was skipped"
+    );
+}
+
+const RTC_SRAM: usize = 0x2000;
+const RTC_BLOCK: usize = 48;
+
+fn rtc_rom() -> PathBuf {
+    let mut rom = vec![0u8; 0x8000];
+    rom[0x100..0x104].copy_from_slice(&[0x00, 0xc3, 0x50, 0x01]);
+    rom[0x104..0x108].copy_from_slice(&[0xce, 0xed, 0x66, 0x66]);
+    rom[0x134..0x13d].copy_from_slice(b"SLOT RTC\0");
+    rom[0x147] = 0x10;
+    rom[0x148] = 0x00;
+    rom[0x149] = 0x02;
+    rom[0x14d] = rom[0x134..0x14d]
+        .iter()
+        .fold(0u8, |a, b| a.wrapping_sub(*b).wrapping_sub(1));
+    rom[0x150..0x152].copy_from_slice(&[0x18, 0xfe]);
+    let p = Path::new(env!("CARGO_TARGET_TMPDIR")).join("slot-rtc.gbc");
+    std::fs::write(&p, rom).expect("write rtc rom");
+    p
+}
+
+fn rtc_sav(days: u32, unix: u64) -> Vec<u8> {
+    let mut sav = vec![0x5a; RTC_SRAM];
+    let regs = [12u32, 34, 5, days, 0];
+    for r in regs.iter().chain(regs.iter()) {
+        sav.extend_from_slice(&r.to_le_bytes());
+    }
+    sav.extend_from_slice(&unix.to_le_bytes());
+    assert_eq!(sav.len(), RTC_SRAM + RTC_BLOCK);
+    sav
+}
+
+fn booted_with(sav: &[u8]) -> Option<LibretroCore> {
+    let mut c = test_core()?;
+    c.load(&rtc_rom()).unwrap();
+    c.load_save_ram(sav).unwrap();
+    for _ in 0..5 {
+        c.run_frame(ButtonMask::default());
+    }
+    Some(c)
+}
+
+#[test]
+fn a_cartridge_clock_rides_along_in_the_save_ram() {
+    let _g = lock();
+    let sav = rtc_sav(100, 1_700_000_000);
+    let Some(c) = booted_with(&sav) else { return };
+    assert_eq!(c.save_ram().as_deref(), Some(&sav[..]));
+}
+
+#[test]
+fn the_cartridge_clock_in_a_save_reaches_the_game() {
+    let _g = lock();
+    let Some(mut a) = booted_with(&rtc_sav(100, 1_700_000_000)) else {
+        return;
+    };
+    let state = a.serialize().unwrap();
+    drop(a);
+    let mut b = booted_with(&rtc_sav(200, 1_700_000_000)).unwrap();
+    assert_ne!(
+        state,
+        b.serialize().unwrap(),
+        "the save's clock never reached the core"
     );
 }

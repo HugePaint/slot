@@ -4,8 +4,6 @@ mod device_app;
 mod host_app;
 
 fn main() {
-    // Build tooling needs the content layout without opening a window. Not a user setting:
-    // the folders come from root::DIRS either way, so there is only one of them to diverge.
     let mut args = std::env::args().skip(1);
     if args.next().as_deref() == Some("--init-root") {
         let Some(dir) = args.next() else {
@@ -15,6 +13,7 @@ fn main() {
         slot::root::ensure(std::path::Path::new(&dir));
         return;
     }
+    slot::crash::install();
 
     #[cfg(feature = "host")]
     host_app::run();

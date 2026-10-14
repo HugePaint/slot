@@ -12,8 +12,6 @@ pub struct HostAudio {
     device: Option<Device>,
 }
 
-/// A cpal stream is not `Send` on every backend, so it is built, played and dropped on a
-/// thread of its own; the sink itself carries nothing but the ring.
 struct Device {
     stop: mpsc::Sender<()>,
     join: JoinHandle<()>,
@@ -99,8 +97,6 @@ fn open_stream(ring: &Arc<Ring>, sample_rate: u32) -> Result<cpal::Stream, Audio
         .default_output_config()
         .map_err(|e| AudioError::Device(e.to_string()))?;
     let mut last = None;
-    // The core's rate is preferred so no resampling is needed, but a device that refuses it
-    // is not a fatal error: DRC resamples to whatever rate the device did accept.
     for config in [exact_rate(&device, sample_rate), Some(fallback)]
         .into_iter()
         .flatten()
@@ -124,8 +120,6 @@ fn exact_rate(device: &cpal::Device, sample_rate: u32) -> Option<cpal::Supported
     })
 }
 
-/// Ask for a period rather than taking whatever the device felt like, so the ring's
-/// occupancy target is a known quantity. About 11 ms at 48 kHz, a sixth of the target.
 const PERIOD_FRAMES: u32 = 512;
 
 fn build(
@@ -147,7 +141,6 @@ fn build(
         cpal::SupportedBufferSize::Unknown => None,
     };
     let mut last = None;
-    // A device that will not take the size it advertised is still a device worth having.
     for size in [
         fixed.map(cpal::BufferSize::Fixed),
         Some(cpal::BufferSize::Default),

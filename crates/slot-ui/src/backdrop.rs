@@ -20,9 +20,12 @@ fn ground() -> [f32; 4] {
     }
 }
 
-/// Cover the whole panel, centre cropped. PNG only, as the labels are.
 pub fn wallpaper_face(path: &Path) -> Option<Vec<u8>> {
     art::cover(path, OUT_W, OUT_H)
+}
+
+pub fn bezel_face(path: &Path, w: u32, h: u32) -> Option<Vec<u8>> {
+    art::cover(path, w, h)
 }
 
 /// The ground, the picture and the scrim over it, as the first things on the screen.

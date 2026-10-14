@@ -14,8 +14,6 @@ fn entry(stamp: &str) -> StateEntry {
     }
 }
 
-/// Newest first, as the ring lists them, and an hour apart so no two entries can read as the
-/// same relative time.
 fn switcher_with(n: usize) -> Polaroids {
     Polaroids::new(
         (0..n)
@@ -24,9 +22,6 @@ fn switcher_with(n: usize) -> Polaroids {
     )
 }
 
-/// None of these tests are about the top plate's status cluster, so it draws with nothing to
-/// show: the same degraded shape a device with no battery node and no clock face yet would
-/// draw.
 fn draw(p: &Polaroids) -> Vec<Draw> {
     let mut out = Vec::new();
     p.draw(None, Printed::default(), None, Printed::default(), &mut out);
@@ -42,8 +37,6 @@ struct Quad {
     alpha: f32,
 }
 
-/// Geometry, whichever variant carried it. Only the compositor can mint a `TexId`, so a unit
-/// test sees the placeholder rect wherever the app would see a photo or a key cap.
 fn quads(out: &[Draw]) -> Vec<Quad> {
     out.iter()
         .map(|d| match *d {
@@ -85,8 +78,6 @@ fn highlighted_dots(out: &[Draw]) -> Vec<Quad> {
         .collect()
 }
 
-/// Hints are the only thing on the plate a whole cap tall, and each is now as wide as its own
-/// label, so the height is what identifies them.
 fn hint_quads(out: &[Draw]) -> Vec<Quad> {
     quads(out)
         .into_iter()
@@ -94,9 +85,6 @@ fn hint_quads(out: &[Draw]) -> Vec<Quad> {
         .collect()
 }
 
-/// The plate names a hint and the list draws one. Without a compositor there is no face to
-/// read the key off, so the naming is checked against `hints` and the drawing against the
-/// list, which holds the two to each other.
 fn has_hint(p: &Polaroids, out: &[Draw], key: &str) -> bool {
     p.hints().iter().any(|h| h.key == key) && hint_quads(out).len() == p.hints().len()
 }
@@ -112,8 +100,6 @@ fn the_screenshot_fills_the_screen_at_exactly_3x() {
     assert_eq!(OUT_H / PHOTO_H, 3);
 }
 
-/// The paused game is still underneath. A screenshot that did not cover it would read as the
-/// live frame with a picture floating over it, which is what the old carousel had a veil for.
 #[test]
 fn nothing_of_the_paused_game_shows_through() {
     let p = switcher_with(1);
@@ -137,8 +123,6 @@ fn there_is_one_dot_per_entry_and_exactly_one_is_selected() {
     );
 }
 
-/// The title names what is on screen. Showing the newest while looking at the third is
-/// worse than showing nothing.
 #[test]
 fn the_title_follows_the_selection() {
     let mut p = switcher_with(3);
@@ -172,8 +156,6 @@ fn the_undo_hint_names_its_button_and_only_shows_when_offered() {
     );
 }
 
-/// One row, in `hints` order, none of them overlapping. Four labels reading left to right is
-/// what makes the bar a legend rather than four separate controls.
 #[test]
 fn the_legend_runs_left_to_right_along_the_bottom_plate() {
     let mut p = switcher_with(2);
@@ -198,8 +180,6 @@ fn the_legend_runs_left_to_right_along_the_bottom_plate() {
     }
 }
 
-/// A full ring is ten dots and they share the plate with the whole legend. Overlapping them is
-/// the failure a shorter ring and a shorter legend both hide.
 #[test]
 fn a_full_ring_of_dots_stays_clear_of_the_legend() {
     let mut p = switcher_with(RING_MAX);
@@ -239,8 +219,6 @@ fn the_legend_names_every_action_on_screen() {
     assert!(p.hints().iter().any(|h| h.key == "X"));
 }
 
-/// Leaving the switcher and dropping a state are ways out of what is on screen; loading it
-/// and undoing that are things done to it. The two kinds sit at opposite ends of the plate.
 #[test]
 fn the_switcher_puts_the_ways_out_on_the_left() {
     let mut p = switcher_with(3);
@@ -257,8 +235,6 @@ fn the_switcher_puts_the_ways_out_on_the_left() {
     }
 }
 
-/// Where a named hint landed. The legend is drawn in `hints` order and the undo is appended
-/// to it, so a key's place in that list is its place in the drawn row.
 fn hint_rect(out: &[Draw], key: &str) -> Option<Quad> {
     let i = match key {
         "X" => LEGEND.len(),
@@ -273,7 +249,6 @@ fn a_hint_is_tighter_than_it_was() {
     assert!(f.w < 128, "the hint is still the old fixed width: {}", f.w);
 }
 
-/// Four hints have to fit the bar at once, which is what the tightening is for.
 #[test]
 fn the_full_legend_fits_across_the_bar() {
     let mut p = switcher_with(3);
@@ -285,8 +260,6 @@ fn the_full_legend_fits_across_the_bar() {
     );
 }
 
-/// The face the compositor uploads and the box the switcher lays out have to be the same
-/// width, or every hint after the first sits a few pixels off its own type.
 #[test]
 fn a_hint_is_laid_out_at_the_width_it_rasterises_to() {
     for (key, label) in [("A", "Load"), ("X", "Undo an interminable action")] {

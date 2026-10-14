@@ -12,8 +12,6 @@ fn ink(face: &UndoFace, x: u32, y: u32) -> bool {
     face.rgba[i] > 128 && face.rgba[i + 3] > 128
 }
 
-/// Both plates are translucent over a screenshot, so a hint has to be a cap and some type on
-/// nothing else. A filled background would be a solid block sitting on the picture.
 #[test]
 fn the_hint_is_a_key_cap_and_type_on_nothing_else() {
     let face = hint_face("B", "Back");
@@ -25,8 +23,6 @@ fn the_hint_is_a_key_cap_and_type_on_nothing_else() {
     );
 }
 
-/// The face is small and the label is not, so the fitter is the only thing keeping the type
-/// off the edge. Ink in the last column is a label that has overrun.
 #[test]
 fn the_label_is_drawn_and_stays_inside_the_hint() {
     for label in ["Back", "Undo save", "Undo an interminable action"] {
@@ -41,8 +37,6 @@ fn the_label_is_drawn_and_stays_inside_the_hint() {
     }
 }
 
-/// The title is the one sentence on screen. A relative time that ran off the plate would be
-/// the switcher naming a state the user cannot read.
 #[test]
 fn the_title_is_drawn_and_stays_inside_its_face() {
     for text in [
@@ -63,14 +57,8 @@ fn the_title_is_drawn_and_stays_inside_its_face() {
     }
 }
 
-/// A legend is pairs, not a run of tokens. The space inside a pair has to stay clearly
-/// smaller than the space between pairs, whatever the two are tuned to. Both screens build
-/// hints from these same constants, so holding the ratio here holds it everywhere.
 #[test]
 fn grouping_reads_as_pairs() {
-    // Both are constants, which clippy rightly notices. The point of the test is to fail
-    // the build if someone retunes one without the other, so the comparison is forced to
-    // happen at runtime.
     let inside = std::hint::black_box(CAP_GAP) as f32;
     let between = std::hint::black_box(HINT_GAP);
     assert!(
@@ -91,8 +79,6 @@ fn cap_pixels(face: &UndoFace, cap_x: u32) -> Vec<u8> {
         .collect()
 }
 
-/// Each caret cap has to carry a dark glyph. A codepoint the symbols font lacks rasterises to
-/// nothing, and a blank cap reads as a layout bug rather than as a missing arrow.
 #[test]
 fn both_arrow_caps_carry_a_glyph() {
     let face = arrows_hint_face("Swap");
@@ -109,14 +95,12 @@ fn both_arrow_caps_carry_a_glyph() {
     }
 }
 
-/// Left and right are two keys pointing two ways, not one mark drawn twice.
 #[test]
 fn the_two_arrows_point_different_ways() {
     let face = arrows_hint_face("Swap");
     assert_ne!(cap_pixels(&face, 0), cap_pixels(&face, CAP + ARROW_GAP));
 }
 
-/// The word the two keys share is set like any other hint's, and stays inside its face.
 #[test]
 fn the_arrows_label_is_drawn_and_stays_inside() {
     let face = arrows_hint_face("Swap");

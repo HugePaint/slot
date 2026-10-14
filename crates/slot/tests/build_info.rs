@@ -9,16 +9,12 @@ fn sample() -> Build {
     }
 }
 
-/// The serial is what the barcode encodes, and Code 39 has no lower case. A hash that fell
-/// outside the alphabet would refuse to encode and the label would draw no bars at all.
 #[test]
 fn the_serial_is_upper_case_hex() {
     assert_eq!(sample().serial(), "9E11A10");
     assert!(sample().serial().chars().all(|c| c.is_ascii_hexdigit()));
 }
 
-/// The boxed digit beside the bars is the dirty marker, which is the only place a build from
-/// a modified tree owns up to it.
 #[test]
 fn the_boxed_digit_says_whether_the_tree_was_dirty() {
     let dirty = Build {
@@ -29,9 +25,6 @@ fn the_boxed_digit_says_whether_the_tree_was_dirty() {
     assert_eq!(dirty.dirty_digit(), '1');
 }
 
-/// Every probe fails soft. The device build runs in a container as root against a bind mount
-/// owned by another uid, which is the case git refuses outright, and a frontend that would
-/// not build because it could not name itself would be a poor trade.
 #[test]
 fn a_build_with_no_git_still_has_a_serial() {
     let unknown = Build {
@@ -40,13 +33,10 @@ fn a_build_with_no_git_still_has_a_serial() {
         ..sample()
     };
     assert!(!unknown.serial().is_empty());
-    // And still scans. The alphabet carries the letters and the hyphen, so the fallback name
-    // goes through the same payload as a real hash rather than leaving the panel blank.
     let payload = format!("*SLOT-{}-{}*", unknown.serial(), unknown.dirty_digit());
     assert!(slot_ui::code39(&payload).is_some());
 }
 
-/// Whatever this build's environment gave it, it is populated rather than empty.
 #[test]
 fn the_current_build_is_populated() {
     let b = Build::current();

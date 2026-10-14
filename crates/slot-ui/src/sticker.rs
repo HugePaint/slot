@@ -30,27 +30,19 @@ const STICKER_PNG: &[u8] = include_bytes!("../assets/sticker-66mod.png");
 /// `WORDMARK_W` to the pixel; the height comes from the artwork's own aspect.
 const WORDMARK_PNG: &[u8] = include_bytes!("../assets/wordmark-66mod.png");
 
-/// How wide the lockup sits on the label. Set by its keyline rather than by the block it sits
-/// in: the outline is what makes it that logotype, and below about this width it thins to
-/// nothing and the whole thing collapses into solid letters.
 const WORDMARK_W: u32 = 250;
 
-/// The traced outline's own aspect, so it rasterises unstretched.
 pub const STICKER_W: u32 = 660;
 pub const STICKER_H: u32 = 228;
 
 const BLACK: [u8; 3] = [0x23, 0x1f, 0x20];
 const WHITE: [u8; 3] = [0xff, 0xff, 0xff];
 
-/// Where the panel sits, as fractions of the traced artwork, so the type follows the shape
-/// rather than a second set of numbers that can drift from it.
 const PANEL_FX: f32 = 62.133 / 205.762;
 const PANEL_FY: f32 = 3.81 / 71.116;
 const PANEL_FW: f32 = 140.315 / 205.762;
 const PANEL_FH: f32 = 35.433 / 71.116;
 
-/// Stands in for the direct current symbol in the text, and is drawn rather than set. Kept as
-/// the real codepoint so the line reads correctly to anything but the rasteriser.
 pub const DC: char = '\u{2393}';
 
 const MARGIN: f32 = 11.0;
@@ -59,25 +51,12 @@ const BODY_PX: f32 = 8.5;
 const SERIAL_PX: f32 = 26.0;
 const SMALL_PX: f32 = 9.0;
 
-/// Everything the label says that is not fixed for the life of the binary.
 pub struct StickerFields<'a> {
-    /// `None` where the board has no gauge, which is a device without one rather than a flat
-    /// battery.
     pub battery: Option<u8>,
-    /// The build's short hash, which is what the barcode encodes and what names this unit —
-    /// the way a serial names a real one. There is no version row: the hash is more specific
-    /// than a version and the plate has one identifier, not two.
     pub serial: &'a str,
-    /// Boxed beside the serial, where the article boxes a check digit. Says whether the tree
-    /// had uncommitted changes when this was built.
     pub dirty_digit: char,
 }
 
-/// What the article gives ten lines of regulatory small print to. Set to the width of the
-/// column rather than to the sentence: the original's type is condensed and Open Sans is not,
-/// so the same wording at the same size would run out from under the barcode panel.
-///
-/// This is what README.md credits, in the space a label has for it.
 pub const CREDITS: [&str; 10] = [
     "EMULATION IS LIBRETRO CORES,",
     "MGBA AND GPSP. AGS-102 IS A",
@@ -91,35 +70,23 @@ pub const CREDITS: [&str; 10] = [
     "BUILDING THIS WITH CLAUDE.",
 ];
 
-/// The article's own origin row, kept word for word. It is the one place the joke is funnier
-/// left alone than rewritten.
 pub const ORIGIN: [&str; 2] = ["S/LOT-USA", "MADE IN ITHACA"];
 
-/// The bottom right block, under the lockup. The copyright sign is a real glyph here; the
-/// article's circled M beside it is not, and is not true of this anyway.
 pub const COPYRIGHT: &str = "\u{a9} 2026 BRANDON T. KOWALSKI";
 
 pub const HOME: &str = "SEE README.";
 
-/// The three headline rows: what the plate says about this unit. Only the gauge moves.
 pub fn head_rows(f: &StickerFields) -> [String; 3] {
     [
-        // The next model number after the backlit SP, which is what this is pretending to be.
         "MODEL NO. AGS-102".into(),
-        // The real symbol. No font here has it — Open Sans lacks it and the Nerd Font's
-        // nearest codepoint is a pair of squares — so the renderer draws it instead of asking
-        // for a glyph. It is a solid bar over three dashes and nothing more.
         format!("INPUT : 5V{DC}1.5A"),
         match f.battery {
             Some(p) => format!("BATTERY : LI-ION ({p}%)"),
-            // The row stays: a label with a gap where a heading was reads as a rendering fault.
             None => "BATTERY : LI-ION".to_string(),
         },
     ]
 }
 
-/// Every line on the label, in reading order. The face draws from the blocks above rather than
-/// from this, so nothing depends on a position in it.
 pub fn sticker_lines(f: &StickerFields) -> Vec<String> {
     let mut out: Vec<String> = head_rows(f).into();
     out.extend(CREDITS.iter().map(|s| s.to_string()));
@@ -167,8 +134,6 @@ impl Canvas {
         }
     }
 
-    /// What `print` would take, without drawing it. Needed wherever something is placed
-    /// against its own right edge rather than its left.
     fn print_measure(&self, s: &str, px: f32) -> f32 {
         let Some(font) = text::label_font() else {
             return 0.0;
@@ -181,18 +146,10 @@ impl Canvas {
             .unwrap_or(0.0)
     }
 
-    /// The direct current symbol: a solid bar with three dashes beneath it. Drawn, because no
-    /// font in this crate carries U+2393 and a missing glyph rasterises to nothing — a rating
-    /// line that quietly loses its middle.
     fn dc(&mut self, x: f32, y: f32, px: f32, c: [u8; 3]) -> f32 {
         let bar_w = px * 0.78;
         let t = (px / 8.0).round().max(1.0);
-        // The two halves need daylight between them or they read as one thick smudge at this
-        // size — which is exactly what a mark this small fails at first.
         let gap = (t * 2.0).max(3.0);
-        // Centred on the cap band of the digits either side, which sits from 0.35 to 1.02 of
-        // the size below the box top. Hung any lower and the dashes land on the baseline,
-        // where the mark stops reading as a symbol and starts reading as an ellipsis.
         let bar_y = (y + px * 0.685 - (t * 2.0 + gap) / 2.0).round();
         self.rect(x as u32, bar_y as u32, bar_w as u32, t as u32, c);
         let dash = bar_w / 5.0;
@@ -209,10 +166,6 @@ impl Canvas {
         bar_w
     }
 
-    /// Rasterised artwork composited at a position, over whatever is already there. `src` is
-    /// straight alpha, the same as everything else this file blends onto the canvas, so the
-    /// blend below scales it by its own alpha rather than trusting it to already carry that
-    /// scale.
     fn blit(&mut self, x: u32, y: u32, src: &[u8], sw: u32, sh: u32) {
         for row in 0..sh {
             for col in 0..sw {
@@ -235,7 +188,6 @@ impl Canvas {
         }
     }
 
-    /// A hollow rectangle, for the boxed digit.
     fn outline(&mut self, x: f32, y: f32, w: f32, h: f32, t: f32, c: [u8; 3]) {
         let (x, y, w, h, t) = (x as u32, y as u32, w as u32, h as u32, t as u32);
         self.rect(x, y, w, t, c);
@@ -244,11 +196,6 @@ impl Canvas {
         self.rect(x + w - t, y, t, h, c);
     }
 
-    /// One line of type at a position, left aligned. `coverage` centres its line in the box
-    /// it is given, so a box cut to the line's own width puts the pen at zero — which is the
-    /// only way to left align through this layer. The box is sized from the text rather than
-    /// from the column, which is also what stops `fit` shrinking and then breaking a line
-    /// mid-word to make it match.
     fn print(&mut self, x: f32, y: f32, s: &str, px: f32, c: [u8; 3]) -> f32 {
         let Some(font) = text::label_font() else {
             return y;
@@ -283,10 +230,7 @@ impl Canvas {
     }
 }
 
-/// The whole sticker, ready to upload. Re-rasterised only when its text changes.
 pub fn sticker_face(f: &StickerFields) -> UndoFace {
-    // The body, its die cut and the barcode panel all arrive together: they are one drawing,
-    // and the only thing left to do here is set type on it.
     let mut c = Canvas::shape(STICKER_W, STICKER_H);
     let panel_x = (PANEL_FX * STICKER_W as f32).round() as u32;
     let panel_y = (PANEL_FY * STICKER_H as f32).round() as u32;
@@ -296,14 +240,10 @@ pub fn sticker_face(f: &StickerFields) -> UndoFace {
     let left = MARGIN;
     let mut y = MARGIN;
     for (n, line) in head_rows(f).iter().enumerate() {
-        // The rating row is the one line with a symbol no font here can set, so it is laid out
-        // by hand around it rather than printed whole.
         if n == 1 {
             if let Some((before, after)) = line.split_once(DC) {
                 let bw = c.print_measure(before, HEAD_PX);
                 c.print(left, y, before, HEAD_PX, WHITE);
-                // Space either side, as a character would have. Without it the mark collides
-                // with the digits and the row reads as damage rather than a rating.
                 let dw = c.dc(left + bw + 4.0, y, HEAD_PX, WHITE);
                 y = c.print(left + bw + dw + 8.0, y, after, HEAD_PX, WHITE);
                 continue;
@@ -316,22 +256,15 @@ pub fn sticker_face(f: &StickerFields) -> UndoFace {
         y = c.print(left, y, line, BODY_PX, WHITE);
     }
     y += 3.0;
-    // Two items on one row, as the article's is: one against each edge of the column.
     let col_right = panel_x as f32 - MARGIN;
     c.print(left, y, ORIGIN[0], BODY_PX, WHITE);
     let maker_w = c.print_measure(ORIGIN[1], BODY_PX);
     c.print(col_right - maker_w, y, ORIGIN[1], BODY_PX, WHITE);
 
-    // The barcode, over the white panel, with a quiet zone either side.
     let bars_y = panel_y + 14;
     let bars_h = 62;
-    // Model, unit and the dirty marker: a scan says everything the label does about which
-    // build this is, the way a product barcode carries model and serial together.
     let payload = format!("SLOT-{}-{}", f.serial, f.dirty_digit);
     if let Some(run) = code39(&format!("*{payload}*")) {
-        // The widest bars that still fit the panel with its quiet zones. Computed rather than
-        // constant: a longer payload otherwise runs off the panel with no complaint, and bars
-        // too fine to read are not a barcode.
         let syms = run.len() as f32 / 9.0;
         let per_sym = 3.0 * CODE39_WIDE + 7.0 * CODE39_NARROW;
         let scale = ((panel_w as f32 - 12.0) / (syms * per_sym + 20.0 * CODE39_NARROW)).min(2.0);
@@ -355,10 +288,6 @@ pub fn sticker_face(f: &StickerFields) -> UndoFace {
         }
     }
 
-    // The serial under the bars, in the panel, with the dirty digit boxed off as the real
-    // label boxes its check digit.
-    // The hash, then the dirty marker in a box of its own — the article boxes its check digit
-    // the same way, and it is the one glyph here that is a flag rather than an identifier.
     let sy = (bars_y + bars_h + 4) as f32;
     let hash_w = c.print_measure(f.serial, SERIAL_PX);
     let box_w = SERIAL_PX * 0.9;
@@ -375,7 +304,6 @@ pub fn sticker_face(f: &StickerFields) -> UndoFace {
         BLACK,
     );
 
-    // The bottom right block, where the console's own name and the copyright are.
     let mut ry = panel_y as f32 + panel_h as f32 + 10.0;
     let right_edge = (panel_x + panel_w) as f32;
     if let Some(mark) = wordmark(WORDMARK_W) {
@@ -389,9 +317,6 @@ pub fn sticker_face(f: &StickerFields) -> UndoFace {
         );
         ry += mh as f32 + 4.0;
     }
-    // The copyright and where the thing actually is. The article's second mark was the
-    // circled M, which says a trademark is registered; this one is not, so the line is the
-    // copyright alone and the address goes under it.
     for line in [COPYRIGHT, HOME] {
         let lw = c.print_measure(line, SMALL_PX);
         ry = c.print(right_edge - lw - 10.0, ry, line, SMALL_PX, WHITE);
@@ -411,9 +336,6 @@ fn wordmark(w: u32) -> Option<(Vec<u8>, (u32, u32))> {
     (dw == w).then_some((px, (dw, dh)))
 }
 
-/// Centred on screen, at its own size. The label is an object being looked at rather than a
-/// screen being laid out, so it is not stretched to fit — and it paints no ground of its own,
-/// so the caller decides what it sits on.
 pub fn draw_sticker(face: Option<TexId>, out: &mut Vec<Draw>) {
     draw_sticker_at(face, (slot_gfx::OUT_H as f32 - STICKER_H as f32) / 2.0, out);
 }

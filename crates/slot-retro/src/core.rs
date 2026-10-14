@@ -7,13 +7,12 @@ use crate::rumble::Rumble;
 pub const GBA_W: u32 = 240;
 pub const GBA_H: u32 = 160;
 
-/// libretro `RETRO_DEVICE_ID_JOYPAD` bit order. Y and X have no GBA equivalent, so bits 1
-/// and 9 are never set.
 #[derive(Copy, Clone, Default, PartialEq, Eq, Debug)]
 pub struct ButtonMask(pub u16);
 
 impl ButtonMask {
     pub const B: u16 = 1 << 0;
+    pub const Y: u16 = 1 << 1;
     pub const SELECT: u16 = 1 << 2;
     pub const START: u16 = 1 << 3;
     pub const UP: u16 = 1 << 4;
@@ -21,8 +20,26 @@ impl ButtonMask {
     pub const LEFT: u16 = 1 << 6;
     pub const RIGHT: u16 = 1 << 7;
     pub const A: u16 = 1 << 8;
+    pub const X: u16 = 1 << 9;
     pub const L: u16 = 1 << 10;
     pub const R: u16 = 1 << 11;
+
+    pub fn without_turbo(self) -> ButtonMask {
+        ButtonMask(self.0 & !(Self::X | Self::Y))
+    }
+
+    pub fn turbo(self, frame: u32) -> ButtonMask {
+        let mut mask = self.0 & !(Self::X | Self::Y);
+        if (frame / 3).is_multiple_of(2) {
+            if self.0 & Self::X != 0 {
+                mask |= Self::A;
+            }
+            if self.0 & Self::Y != 0 {
+                mask |= Self::B;
+            }
+        }
+        ButtonMask(mask)
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -67,7 +84,11 @@ impl From<std::io::Error> for CoreError {
 pub trait RetroCore: Send {
     fn load(&mut self, rom: &Path) -> Result<(), CoreError>;
     fn run_frame(&mut self, input: ButtonMask);
-    /// `GBA_W * GBA_H * 4` bytes, little endian XRGB8888, so the byte order is B, G, R, unused.
+    fn run_frame_linked(&mut self, p1: ButtonMask, _p2: ButtonMask) {
+        self.run_frame(p1);
+    }
+    fn set_option(&mut self, _key: &str, _value: &str) {}
+    fn set_frame_skip(&mut self, _skip: bool) {}
     fn video_xrgb8888(&self) -> &[u8];
     fn take_audio(&mut self) -> Vec<i16>;
     fn serialize(&mut self) -> Result<Vec<u8>, CoreError>;
@@ -75,33 +96,14 @@ pub trait RetroCore: Send {
     fn save_ram(&self) -> Option<Vec<u8>>;
     fn load_save_ram(&mut self, data: &[u8]) -> Result<(), CoreError>;
     fn av_info(&self) -> AvInfo;
-    /// Where this core's rumble lands. A core that was never offered the interface, or one
-    /// that turned it down, hands back a cell nothing ever writes.
     fn rumble(&self) -> Rumble {
         Rumble::default()
     }
-    /// Where this core's serial traffic — link cable, wireless adapter — goes. Only gpSP ever
-    /// answers this for real; a core that never registers libretro's netpacket interface
-    /// hands back a handle nothing ever reads from or writes to, the same shape `rumble`
-    /// above uses for a core with no motor.
     fn net(&self) -> Link {
         Link::default()
     }
-    /// Begins a netpacket session on this core, if it carries one. `client_id` is libretro's
-    /// own: 0 the host, 1 the joiner — the only two this product has (RFU supports four; see
-    /// the plan for why this stays at two). A core with no serial traffic of its own — every
-    /// core but gpSP — has nothing to start, so the default does nothing.
     fn start_link(&mut self, _client_id: u16) {}
-    /// Once per frame: hand the core anything the transport put in its inbound queue since
-    /// the last call, then let the core do its own polling. A core that never registered
-    /// netpacket has nothing to drain, so the default is a no-op — only `LibretroCore` (gpSP)
-    /// ever overrides this.
     fn pump_link(&mut self) {}
-    /// Ends a netpacket session on this core: `start_link`'s counterpart, called once
-    /// whatever was carrying the session's traffic is going away. libretro documents `stop`
-    /// as OPTIONAL — unlike `start`, a spec-compliant core may leave it NULL — so a core that
-    /// never offered one simply has nothing to hear this through, and the default does
-    /// nothing.
     fn stop_link(&mut self) {}
     /// Apply a cheat code to the core. A no-op for cores or builds without cheat support — the
     /// only crate that ever overrides this is `LibretroCore`, and only for a core that actually
@@ -111,4 +113,54 @@ pub trait RetroCore: Send {
     /// Clear the core's cheat list. No-op for cores/builds without cheat support. Called from the
     /// emulator thread only.
     fn cheat_reset(&self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Recorder(Vec<ButtonMask>);
+
+    impl RetroCore for Recorder {
+        fn load(&mut self, _rom: &Path) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn run_frame(&mut self, input: ButtonMask) {
+            self.0.push(input);
+        }
+        fn video_xrgb8888(&self) -> &[u8] {
+            &[]
+        }
+        fn take_audio(&mut self) -> Vec<i16> {
+            Vec::new()
+        }
+        fn serialize(&mut self) -> Result<Vec<u8>, CoreError> {
+            Ok(Vec::new())
+        }
+        fn unserialize(&mut self, _data: &[u8]) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn save_ram(&self) -> Option<Vec<u8>> {
+            None
+        }
+        fn load_save_ram(&mut self, _data: &[u8]) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn av_info(&self) -> AvInfo {
+            AvInfo {
+                fps: 60.0,
+                sample_rate: 48_000.0,
+                width: 0,
+                height: 0,
+            }
+        }
+    }
+
+    #[test]
+    fn a_core_without_link_mode_runs_player_1_alone() {
+        let mut core = Recorder::default();
+        core.run_frame_linked(ButtonMask(ButtonMask::A), ButtonMask(ButtonMask::B));
+        assert_eq!(core.0, vec![ButtonMask(ButtonMask::A)]);
+    }
 }

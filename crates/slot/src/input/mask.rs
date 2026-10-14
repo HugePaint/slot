@@ -97,8 +97,6 @@ impl Pad {
         ButtonMask(m)
     }
 
-    /// Buttons pressed for the switcher are not the game's. Without this the game resumes
-    /// holding whatever was down when the switcher took the input.
     pub fn clear(&mut self) {
         self.down = [false; BTN_COUNT];
     }
@@ -118,6 +116,8 @@ fn bit(btn: Btn) -> Option<u16> {
         Btn::Right => ButtonMask::RIGHT,
         Btn::A => ButtonMask::A,
         Btn::B => ButtonMask::B,
+        Btn::X => ButtonMask::X,
+        Btn::Y => ButtonMask::Y,
         Btn::L1 => ButtonMask::L,
         Btn::R1 => ButtonMask::R,
         Btn::Start => ButtonMask::START,

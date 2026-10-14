@@ -1,18 +1,20 @@
-use slot_store::{Cart, Core};
+use slot_store::{Cart, Core, Platform};
 use slot_ui::{
-    board_at, board_face, chip_face, chip_shadow_face, lid_at, lift_of, on_board, padded,
-    rom_marking, rom_marking_face, shelf_cart, shell_for, slide_of, socket_face, CartFace, Placed,
+    board_at, board_face, chip_face, chip_shadow_face, gba_shell_for, lid_at, lift_of, on_board,
+    padded, rom_marking, rom_marking_face, shelf_cart, slide_of, socket_face, CartFace, Placed,
     BOARD_H, BOARD_W, CART_H, CHIP_H, CHIP_W, DEFAULT_SHELL, LID_TURN, ROM_H, ROM_W, SHADOW_H,
     SHADOW_W, SLIDE_SHARE, SLIDE_UP, SOCKET_H, SOCKET_W, TURN_PAD,
 };
 
 fn cart(stem: &str, code: &str) -> Cart {
     Cart {
+        platform: Platform::Gba,
         initial: bucket(stem),
         stem: stem.into(),
-        rom: format!("Games/{stem}.gba").into(),
+        rom: format!("Games/GBA/{stem}.gba").into(),
         label: None,
         code: code.into(),
+        shell: None,
         title: stem.to_uppercase(),
     }
 }
@@ -34,15 +36,11 @@ fn near(a: [u8; 3], b: [u8; 3]) -> bool {
 
 const EMERALD: &str = "Pokemon - Emerald Version (USA, Europe)";
 
-/// The chip is tall and narrow, so the name goes on it a few words at a time. The dump's tags
-/// are facts about the file, not the game, and the chip does not carry them.
 #[test]
 fn the_marking_is_the_title_stacked() {
     assert_eq!(rom_marking(EMERALD), ["POKEMON", "EMERALD", "VERSION"]);
 }
 
-/// Three lines is all the chip has. A fourth would run off the bottom, so the rest joins the
-/// third and the fitter shrinks it.
 #[test]
 fn a_long_title_folds_its_tail_into_the_third_line() {
     assert_eq!(
@@ -60,7 +58,6 @@ fn bracketed_tags_never_reach_the_chip() {
     assert_eq!(rom_marking("Metroid Fusion"), ["METROID", "FUSION"]);
 }
 
-/// Ink in the outermost column is type that ran off the chip and onto the legs.
 #[test]
 fn the_marking_is_drawn_and_stays_on_the_chip() {
     for stem in [
@@ -87,8 +84,6 @@ fn the_marking_is_drawn_and_stays_on_the_chip() {
     }
 }
 
-/// The coin cell is bare metal. Board unit (204, 38) lands at panel pixel (316, 59) of the face;
-/// within 9 px of it is only the cell's own fill, so dark pixels there are print.
 #[test]
 fn the_cell_carries_no_print() {
     let face = board_face(&cart(EMERALD, "BPEE"));
@@ -100,7 +95,6 @@ fn the_cell_carries_no_print() {
     assert_eq!(dark, 0, "the cell still has {dark} dark pixels of print");
 }
 
-/// Rasterised at the size it is shown at, since that is the only size a face is sharp at.
 #[test]
 fn the_board_is_the_size_it_is_shown_at() {
     let face = board_face(&cart(EMERALD, "BPEE"));
@@ -108,13 +102,11 @@ fn the_board_is_the_size_it_is_shown_at() {
     assert_eq!((BOARD_W, BOARD_H), (372, 209));
 }
 
-/// The back of the cart is the same plastic as its front on the shelf. The wall at board unit
-/// (9, 45) is clear of the clips, the floor and every shadow.
 #[test]
 fn the_back_shell_is_the_carts_own_plastic() {
     let emerald = board_face(&cart(EMERALD, "BPEE"));
     assert!(
-        near(rgb(&emerald, 14, 70), shell_for("BPEE").colour),
+        near(rgb(&emerald, 14, 70), gba_shell_for("BPEE").colour),
         "Emerald's wall is {:?}",
         rgb(&emerald, 14, 70)
     );
@@ -126,8 +118,6 @@ fn the_back_shell_is_the_carts_own_plastic() {
     );
 }
 
-/// A board that failed to parse comes back transparent and every other test here would pass on
-/// nothing. Board unit (200, 70) is bare solder mask.
 #[test]
 fn the_board_itself_is_drawn() {
     let face = board_face(&cart(EMERALD, "BPEE"));
@@ -142,17 +132,15 @@ fn alpha(face: &CartFace, x: u32, y: u32) -> u8 {
     face.rgba[((y * face.w + x) * 4 + 3) as usize]
 }
 
-/// The open cart grows out of the cart on the shelf, so its first frame has to be that cart
-/// exactly, and its last the place the mockup put it.
 #[test]
 fn the_open_cart_starts_as_the_shelf_cart_and_lands_where_the_mockup_has_it() {
     assert_eq!(
         shelf_cart(),
         Placed {
-            x: 240.0,
-            y: 172.5,
-            w: 240.0,
-            h: 135.0
+            x: 180.0,
+            y: 134.0,
+            w: 360.0,
+            h: 212.0
         }
     );
     assert_eq!(board_at(0.0), shelf_cart());
@@ -197,7 +185,6 @@ fn the_beats_split_one_progress() {
     assert!((slide_of(SLIDE_SHARE / 2.0) - 0.5).abs() < 1e-5);
 }
 
-/// The back half is the cart that was standing there; it does not move until the front is off it.
 #[test]
 fn the_back_half_stays_on_the_shelf_while_the_front_slides() {
     for p in [0.0, 0.1, 0.25, SLIDE_SHARE] {
@@ -205,7 +192,6 @@ fn the_back_half_stays_on_the_shelf_while_the_front_slides() {
     }
 }
 
-/// A third of the cart, level: the travel that unhooks a real shell once its screw is out.
 #[test]
 fn the_front_slides_up_a_third_before_it_lifts() {
     assert_eq!(SLIDE_UP, CART_H as f32 / 3.0);
@@ -223,7 +209,6 @@ fn the_front_slides_up_a_third_before_it_lifts() {
     assert!(half.y < shelf.y && half.y > slid.y && turn == 0.0 && half.w == shelf.w);
 }
 
-/// The lift picks the lid up from where the slide left it rather than from the shelf.
 #[test]
 fn the_lift_starts_where_the_slide_ends() {
     let (slid, _) = lid_at(SLIDE_SHARE);
@@ -238,7 +223,6 @@ fn board_units_land_on_the_panel_at_one_and_a_half_times() {
     assert_eq!(on_board(board, 240.0, 135.0), (546.0, 359.0));
 }
 
-/// An empty socket names the core it is for, quietly: the chip's own name is the loud one.
 #[test]
 fn a_socket_names_its_core_at_half_strength() {
     for core in Core::ALL {
@@ -256,11 +240,6 @@ fn a_socket_names_its_core_at_half_strength() {
     }
 }
 
-/// The outline's left edge is the socket SVG's closing stroke, sitting right at `x = 0` for
-/// the straight run of it: a partly covered pixel there is the outline ink, `#eef5e6`, at some
-/// fraction of full alpha. Premultiplied, the compositor's own blend then multiplies that
-/// fraction in a second time and darkens it; straight alpha keeps the ink's own brightness at
-/// any coverage.
 #[test]
 fn a_partly_covered_socket_edge_pixel_keeps_the_outline_inks_brightness() {
     let face = socket_face(Core::Mgba);
@@ -277,8 +256,6 @@ fn a_partly_covered_socket_edge_pixel_keeps_the_outline_inks_brightness() {
     );
 }
 
-/// A turned quad's edge is not antialiased, so the chip's outline has to sit inside the
-/// texture: the outermost `TURN_PAD` pixels are nothing.
 #[test]
 fn the_chip_is_padded_clear_on_every_side() {
     for core in [None, Some(Core::Mgba), Some(Core::Gpsp)] {
@@ -301,8 +278,6 @@ fn the_chip_is_padded_clear_on_every_side() {
     }
 }
 
-/// Seated, the chip is the loudest word on the board; in flight it says nothing, so the two
-/// sockets' names are the only ones on screen.
 #[test]
 fn a_seated_chip_wears_its_name_and_a_flying_one_is_blank() {
     let light = |face: &CartFace| {
@@ -343,11 +318,6 @@ fn the_shadow_is_darkest_in_the_middle_and_gone_at_the_corners() {
     assert_eq!(alpha(&s, 0, 0), 0);
 }
 
-/// The seated chip's name sits on the chip's own opaque black body, not on nothing, so its
-/// edges have to blend toward the body colour instead of snapping straight to full ink. Diffed
-/// against the blank chip, which carries the same body art, so only the name's own pixels are
-/// in play — not the legs, the pin-1 dot or the body's rounded corners, which are antialiased
-/// on both chips already.
 #[test]
 fn the_seated_chips_name_is_antialiased_against_the_body() {
     let red = |face: &CartFace, x: u32, y: u32| face.rgba[((y * face.w + x) * 4) as usize];

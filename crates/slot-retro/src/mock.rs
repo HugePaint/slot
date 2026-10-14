@@ -8,9 +8,6 @@ const TONE_HZ: f64 = 440.0;
 const AMPLITUDE: f64 = 6000.0;
 const SRAM_LEN: usize = 8 * 1024;
 
-/// Total samples the tone has produced by the start of `frame`. Deriving the count from the
-/// frame number rather than accumulating per frame is what keeps the mock free of the
-/// half-sample-per-frame drift a naive `SAMPLE_RATE / FPS` would collect.
 fn samples_at(frame: u64) -> u64 {
     (frame as f64 * SAMPLE_RATE / FPS) as u64
 }
@@ -20,6 +17,7 @@ pub struct MockCore {
     video: Vec<u8>,
     audio: Vec<i16>,
     sram: Option<Vec<u8>>,
+    skip_next: bool,
 }
 
 impl Default for MockCore {
@@ -35,13 +33,12 @@ impl MockCore {
             video: vec![0; (GBA_W * GBA_H * 4) as usize],
             audio: Vec::new(),
             sram: None,
+            skip_next: false,
         };
         c.render();
         c
     }
 
-    /// Purely a function of the frame counter, so `unserialize` can regenerate the exact
-    /// frame from the counter alone.
     fn render(&mut self) {
         let t = self.frame as u32;
         let mut i = 0;
@@ -84,7 +81,13 @@ impl RetroCore for MockCore {
             self.audio.push(s);
             self.audio.push(s);
         }
-        self.render();
+        if !self.skip_next {
+            self.render();
+        }
+    }
+
+    fn set_frame_skip(&mut self, skip: bool) {
+        self.skip_next = skip;
     }
 
     fn video_xrgb8888(&self) -> &[u8] {

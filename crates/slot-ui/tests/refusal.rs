@@ -1,7 +1,5 @@
 use slot_ui::Refusal;
 
-/// Peak displacement over a window, so the assertion does not depend on where in the cycle
-/// a given millisecond lands.
 fn peak(r: &Refusal, from: u64, to: u64) -> f32 {
     (from..to).map(|t| r.offset(t).abs()).fold(0.0, f32::max)
 }
@@ -20,7 +18,6 @@ fn the_shake_decays_and_ends() {
     assert!(!r.active(1_400), "the refusal outlives its own shake");
 }
 
-/// It shakes both ways. A plate that only ever slides right is a plate that has moved.
 #[test]
 fn the_shake_crosses_where_it_started() {
     let r = Refusal::started(0);

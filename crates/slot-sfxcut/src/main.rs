@@ -1,22 +1,3 @@
-//! Cuts `crates/slot/assets/{insert,eject}.pcm` out of a recording.
-//!
-//! ```text
-//! # what is in the recording, and which takes are usable
-//! cargo run -p slot-sfxcut -- takes.wav
-//!
-//! # cut the two you picked, by their time in seconds
-//! cargo run -p slot-sfxcut -- takes.wav --insert 4.812 --eject 9.140
-//!
-//! # and drop wavs somewhere to listen before committing
-//! cargo run -p slot-sfxcut -- takes.wav --insert 4.812 --eject 9.140 --wav /tmp/audition
-//! ```
-//!
-//! A phone voice memo needs converting first, which macOS can do on its own:
-//!
-//! ```text
-//! afconvert -f WAVE -d LEI16@48000 -c 1 memo.m4a takes.wav
-//! ```
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -74,9 +55,6 @@ fn run() -> Result<(), String> {
     }
 }
 
-/// Every candidate, with whether each direction would fit around it. Fitting is about the
-/// silence either side: an insert needs 97 ms before the transient and 143 ms after, an
-/// eject 21 ms before and 294 ms after.
 fn list(found: &[Take]) {
     println!(
         "  {:>3}  {:>8}  {:>6}  {:>10}  {:>10}",
@@ -144,9 +122,6 @@ fn write(
     Ok(())
 }
 
-/// A time typed off the listing is close to a detected transient but rarely exactly on it,
-/// and being 10 ms out moves the sound against the picture. Anything within 25 ms of a
-/// candidate snaps to it; anything further is taken as meant.
 fn snap(found: &[Take], at: f32) -> f32 {
     found
         .iter()
@@ -190,21 +165,19 @@ fn parse() -> Result<Args, String> {
     })
 }
 
-/// A 44 byte canonical header in front of the same bytes the .pcm holds. Only so the output
-/// can be listened to; nothing reads these back.
 fn wav(pcm: &[u8]) -> Vec<u8> {
     let hz = HZ as u32;
     let mut out = Vec::with_capacity(44 + pcm.len());
     out.extend(b"RIFF");
     out.extend(((36 + pcm.len()) as u32).to_le_bytes());
     out.extend(b"WAVEfmt ");
-    out.extend(16u32.to_le_bytes()); // pcm chunk size
-    out.extend(1u16.to_le_bytes()); // uncompressed
-    out.extend(1u16.to_le_bytes()); // mono
+    out.extend(16u32.to_le_bytes());
+    out.extend(1u16.to_le_bytes());
+    out.extend(1u16.to_le_bytes());
     out.extend(hz.to_le_bytes());
-    out.extend((hz * 2).to_le_bytes()); // bytes per second
-    out.extend(2u16.to_le_bytes()); // block align
-    out.extend(16u16.to_le_bytes()); // bits
+    out.extend((hz * 2).to_le_bytes());
+    out.extend(2u16.to_le_bytes());
+    out.extend(16u16.to_le_bytes());
     out.extend(b"data");
     out.extend((pcm.len() as u32).to_le_bytes());
     out.extend(pcm);

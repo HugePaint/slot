@@ -4,14 +4,11 @@ use slot_store::{
 };
 
 use crate::palette;
-use crate::plate::{blit, hint_width, UndoFace, HINT_H};
+use crate::plate::{blit, centred_hints, hint_width, UndoFace, HINT_H, LEGEND_GAP};
 use crate::text;
 
 const DAY: i64 = 86_400;
 
-/// The only years the picker can express. A dead RTC reads as 1970 and thirty presses to
-/// reach the present is not a screen anyone confirms, so a clock outside the range is seeded
-/// to the nearest end rather than left where it cannot be moved from.
 const YEAR_MIN: i64 = 2000;
 const YEAR_MAX: i64 = 2099;
 
@@ -20,29 +17,19 @@ const YEAR_MAX: i64 = 2099;
 /// will have to round to.
 const OFFSET_STEP: i64 = 30;
 
-/// Cell widths left to right: year, mark, month, mark, day, gap, hour, mark, minute, gap,
-/// offset. A fixed
-/// grid rather than one measured run of type, because the caret has to sit under the field it
-/// is changing and proportional digits would put every date's fields somewhere slightly else.
 const CELLS: [u32; 11] = [88, 22, 52, 22, 52, 36, 52, 22, 52, 36, 128];
-/// Which cell each field is drawn in, in `Field::ALL` order.
 const FIELD_CELL: [usize; 6] = [0, 2, 4, 6, 8, 10];
 
 const PICKER_H: u32 = 44;
 const PICKER_PX: f32 = 30.0;
 const PICKER_MIN_PX: f32 = 12.0;
-/// Under the field being changed, standing in for the sketch's pair of arrows.
 const CARET_H: f32 = 4.0;
 const CARET_GAP: f32 = 6.0;
-/// Below the caret, far enough down that it reads as an instruction rather than as part of
-/// the date.
 const HINT_DROP: f32 = 48.0;
 
 const SET_CLOCK_KEY: &str = "A";
 const SET_CLOCK_LABEL: &str = crate::lang::SET_CLOCK_LABEL;
 
-/// Hours and minutes off a ring stamp. Never seconds: a clock showing them is a clock being
-/// watched rather than glanced at.
 pub fn clock_label(stamp: &str) -> String {
     parse_stamp(stamp).map(hhmm).unwrap_or_default()
 }
@@ -52,6 +39,19 @@ pub fn hhmm(secs: i64) -> String {
     format!("{:02}:{:02}", rem / 3600, rem / 60 % 60)
 }
 
+const MONTHS: [&str; 12] = [
+    "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+];
+
+pub fn date_time_text(secs: i64) -> String {
+    let (_, month, day) = civil_from_days(secs.div_euclid(DAY));
+    let name = MONTHS
+        .get((month - 1) as usize)
+        .copied()
+        .unwrap_or_default();
+    format!("{name} {day} {}", hhmm(secs))
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Field {
     Year,
@@ -59,7 +59,6 @@ pub enum Field {
     Day,
     Hour,
     Minute,
-    /// Minutes between what the other fields say and the UTC the card keeps.
     Offset,
 }
 
@@ -74,8 +73,6 @@ impl Field {
     ];
 }
 
-/// Year, month, day, hour, minute, with one of them under the caret. Asked once on slot's
-/// first launch and never reachable again, which is what keeps it from being a setting.
 #[derive(Clone, Debug)]
 pub struct ClockPicker {
     year: i64,
@@ -83,15 +80,11 @@ pub struct ClockPicker {
     day: i64,
     hour: i64,
     minute: i64,
-    /// Minutes to add to UTC to get the other fields. Zero until it is asked for, which is
-    /// also right for a device that never left Greenwich.
     offset_min: i64,
     cursor: usize,
 }
 
 impl ClockPicker {
-    /// Seconds are dropped rather than rounded: the picked time is what the screen said, and
-    /// a clock that lands half a minute past what was confirmed is one nobody asked for.
     pub fn from_secs(secs: i64) -> Self {
         let (year, month, day) = civil_from_days(secs.div_euclid(DAY));
         let rem = secs.rem_euclid(DAY);
@@ -103,6 +96,14 @@ impl ClockPicker {
             minute: rem / 60 % 60,
             offset_min: 0,
             cursor: 0,
+        }
+    }
+
+    pub fn local(utc: i64, offset_min: i16) -> Self {
+        let offset = i64::from(offset_min);
+        ClockPicker {
+            offset_min: offset,
+            ..ClockPicker::from_secs(utc + offset * 60)
         }
     }
 
@@ -118,8 +119,6 @@ impl ClockPicker {
         }
     }
 
-    /// UTC, which is what the card keeps. The fields are the time on the wall, so the offset
-    /// that turns one into the other comes back off here.
     pub fn secs(&self) -> i64 {
         let local = days_from_civil(self.year, self.month, self.day) * DAY
             + self.hour * 3600
@@ -147,8 +146,6 @@ impl ClockPicker {
         self.cursor = Field::ALL.iter().position(|f| *f == field).unwrap_or(0);
     }
 
-    /// Clamped, not wrapped. Five fields are a line to walk along, and only the values on
-    /// them are cyclic.
     pub fn left(&mut self) {
         self.cursor = self.cursor.saturating_sub(1);
     }
@@ -172,19 +169,14 @@ impl ClockPicker {
             Field::Day => self.day = wrap(self.day + by, 1, days_in_month(self.year, self.month)),
             Field::Hour => self.hour = wrap(self.hour + by, 0, 23),
             Field::Minute => self.minute = wrap(self.minute + by, 0, 59),
-            // Clamped where every other field wraps: the ends of this one are the ends of the
-            // world, and rolling from Kiritimati to Baker Island on one press is never meant.
             Field::Offset => {
                 self.offset_min = (self.offset_min + by * OFFSET_STEP)
                     .clamp(i64::from(UTC_OFFSET_MIN), i64::from(UTC_OFFSET_MAX))
             }
         }
-        // A 31st carried into February would confirm a date the calendar does not have.
         self.day = self.day.min(days_in_month(self.year, self.month));
     }
 
-    /// What the line of type says. The binary watches it to know when the face has to be
-    /// rasterised again.
     pub fn text(&self) -> String {
         format!(
             "{:04}-{:02}-{:02} {:02}:{:02} {}",
@@ -197,8 +189,6 @@ impl ClockPicker {
         )
     }
 
-    /// The whole line, cell by cell, so the caret and the digits are laid out by the same
-    /// grid.
     pub fn face(&self) -> UndoFace {
         let w = picker_w();
         let mut rgba = vec![0u8; (w * PICKER_H * 4) as usize];
@@ -235,14 +225,19 @@ impl ClockPicker {
         }
     }
 
-    /// Signed always, so the field reads as an offset rather than as another time.
     fn offset_text(&self) -> String {
         let sign = if self.offset_min < 0 { '-' } else { '+' };
         let mins = self.offset_min.abs();
         format!("{sign}{:02}:{:02}", mins / 60, mins % 60)
     }
 
-    pub fn draw(&self, line: Option<TexId>, hint: Option<TexId>, out: &mut Vec<Draw>) {
+    pub fn draw(
+        &self,
+        line: Option<TexId>,
+        hint: Option<TexId>,
+        back: Option<(TexId, u32)>,
+        out: &mut Vec<Draw>,
+    ) {
         out.push(Draw::Rect {
             x: 0.0,
             y: 0.0,
@@ -271,12 +266,26 @@ impl ClockPicker {
             h: CARET_H,
             colour: palette::ink_f(),
         });
-        if let Some(tex) = hint {
-            let hw = hint_width(SET_CLOCK_KEY, SET_CLOCK_LABEL) as f32;
+        let hint_y = y + PICKER_H as f32 + HINT_DROP;
+        let hw = hint_width(SET_CLOCK_KEY, SET_CLOCK_LABEL);
+        let (Some(back), Some(tex)) = (back, hint) else {
+            if let Some(tex) = hint {
+                out.push(Draw::Tex {
+                    x: (OUT_W as f32 - hw as f32) / 2.0,
+                    y: hint_y,
+                    w: hw as f32,
+                    h: HINT_H as f32,
+                    tex,
+                    alpha: 1.0,
+                });
+            }
+            return;
+        };
+        for (tex, w, x) in centred_hints(&[back, (tex, hw)], LEGEND_GAP) {
             out.push(Draw::Tex {
-                x: (OUT_W as f32 - hw) / 2.0,
-                y: y + PICKER_H as f32 + HINT_DROP,
-                w: hw,
+                x,
+                y: hint_y,
+                w: w as f32,
                 h: HINT_H as f32,
                 tex,
                 alpha: 1.0,
@@ -285,7 +294,6 @@ impl ClockPicker {
     }
 }
 
-/// The one instruction on the screen, and the only way off it.
 pub fn set_clock_hint_face() -> UndoFace {
     crate::plate::hint_face(SET_CLOCK_KEY, SET_CLOCK_LABEL)
 }

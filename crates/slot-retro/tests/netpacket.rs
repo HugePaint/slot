@@ -29,13 +29,6 @@ fn flag_values_match_libretro() {
     assert_eq!(NETPACKET_BROADCAST, 0xFFFF);
 }
 
-// --- Link ----------------------------------------------------------------------------
-//
-// `Link` is where a core's serial traffic actually goes once a session is live — the
-// `LibretroCore`/`Host` half of the seam is exercised in `libretro.rs`'s own `#[cfg(test)]`
-// module, since that is the only place the private ABI plumbing (`environment`, the
-// trampolines, `drain_link`) is reachable. What is public here is `Link` itself.
-
 #[test]
 fn link_hands_back_inbound_packets_in_the_order_they_arrived() {
     let link = Link::default();
@@ -91,9 +84,6 @@ fn link_is_inactive_until_something_marks_it_live() {
 
 #[test]
 fn a_clone_shares_the_same_queues_as_the_original() {
-    // `Link` is the same kind of handle `Rumble` is: cheap to clone, every clone the same
-    // shared state. This is what lets the frontend hold one clone while the transport (or,
-    // through the core, `pump_link`) holds another.
     let link = Link::default();
     let other = link.clone();
 
@@ -104,8 +94,6 @@ fn a_clone_shares_the_same_queues_as_the_original() {
 
 #[test]
 fn a_core_that_never_registers_netpacket_hands_back_an_inert_link() {
-    // `MockCore` never overrides `RetroCore::net`, so this exercises the trait's default —
-    // the same thing `tests/rumble.rs` does for `RetroCore::rumble`'s default.
     let core: Box<dyn RetroCore> = Box::new(MockCore::new());
     let link = core.net();
     assert!(!link.is_active());
@@ -113,14 +101,6 @@ fn a_core_that_never_registers_netpacket_hands_back_an_inert_link() {
     assert_eq!(link.take_outbound(), None);
 }
 
-// --- LibretroCore::net / pump_link, against the real vendored core -------------------
-//
-// mGBA's libretro build carries no netpacket support at all, so neither of these tests can
-// reach the ABI seam — only `LibretroCore::net`'s existence and `pump_link`'s safety with no
-// registered core. The seam itself is `libretro.rs`'s job, per its own module doc above.
-
-/// libretro cores keep their state in dylib globals, so two live cores over one dylib is not
-/// a supported configuration and these tests must not overlap with each other.
 static CORE_LOCK: Mutex<()> = Mutex::new(());
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {
@@ -135,8 +115,6 @@ fn mgba() -> Option<LibretroCore> {
     Some(LibretroCore::open(&p).expect("vendored core is present but would not open"))
 }
 
-/// A header and nothing else — enough for mGBA to accept the cart. What it executes does
-/// not matter to either test below.
 fn header_only_rom() -> PathBuf {
     let mut rom = vec![0u8; 0x8000];
     rom[0..4].copy_from_slice(&0xea00002eu32.to_le_bytes());
@@ -176,7 +154,5 @@ fn pump_link_is_harmless_on_a_core_that_never_registered_netpacket() {
     core.load(&header_only_rom()).expect("load");
     core.run_frame(ButtonMask::default());
 
-    // mGBA's libretro build never registers netpacket. This must not panic, and must not
-    // manufacture a call into a core that offered nothing.
     core.pump_link();
 }

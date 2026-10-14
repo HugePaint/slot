@@ -7,6 +7,7 @@
 
 use slot::input::HostInput;
 use slot_input::{Btn, InputSource, RawEvent};
+use winit::event::WindowEvent;
 use winit::keyboard::KeyCode;
 
 fn edge(h: &mut HostInput, code: KeyCode, pressed: bool) -> Vec<RawEvent> {
@@ -76,11 +77,6 @@ fn the_lid_key_toggles_because_the_host_has_no_hinge() {
     );
 }
 
-/// Escape and L used to be power and the lid. They are the two buttons that end a live link
-/// session, and a session that ends cannot be resumed — so the cost of a stray press went up
-/// sharply when linking landed, while the bindings did not. Escape is the key every player
-/// reaches for to back out of something; L is a letter. Both are now bound to nothing, and
-/// this is what stops either quietly coming back.
 #[test]
 fn the_two_reflex_keys_no_longer_end_a_session() {
     let mut h = HostInput::new();
@@ -90,4 +86,44 @@ fn the_two_reflex_keys_no_longer_end_a_session() {
             "{reflex:?} is bound again, and it can end a live link"
         );
     }
+}
+
+#[test]
+fn a_window_that_loses_focus_lets_go_of_the_keys_held_in_it() {
+    let mut h = HostInput::new();
+    assert_eq!(
+        edge(&mut h, KeyCode::KeyZ, true),
+        vec![RawEvent::Down(Btn::A)]
+    );
+    assert_eq!(
+        edge(&mut h, KeyCode::ArrowRight, true),
+        vec![RawEvent::Down(Btn::Right)]
+    );
+    assert_eq!(
+        edge(&mut h, KeyCode::KeyZ, false),
+        vec![RawEvent::Up(Btn::A)]
+    );
+    h.on_window_event(&WindowEvent::Focused(false));
+    assert_eq!(
+        h.poll(0),
+        vec![RawEvent::Up(Btn::Right)],
+        "the key still down when the window went away was never released"
+    );
+    h.on_window_event(&WindowEvent::Focused(false));
+    assert!(h.poll(0).is_empty());
+    h.on_window_event(&WindowEvent::Focused(true));
+    assert!(h.poll(0).is_empty());
+}
+
+#[test]
+fn x_and_y_reach_the_pad_as_their_own_bits() {
+    use slot::input::Pad;
+    use slot_input::Action;
+    use slot_retro::ButtonMask;
+    let mut pad = Pad::default();
+    pad.apply(Action::GbaDown(Btn::X));
+    pad.apply(Action::GbaDown(Btn::Y));
+    assert_eq!(pad.mask().0, ButtonMask::X | ButtonMask::Y);
+    pad.apply(Action::GbaUp(Btn::X));
+    assert_eq!(pad.mask().0, ButtonMask::Y);
 }

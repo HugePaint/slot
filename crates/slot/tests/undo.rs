@@ -1,14 +1,13 @@
 mod common;
 
 use common::{app_playing_in, app_playing_with, tmp_root_with_carts, CoreSnapshot};
-use slot_input::{Action, Btn};
-use slot_store::{Core, StateRing};
+use slot_store::{Core, Platform, StateRing};
 use slot_ui::lang;
 
 #[test]
 fn undoing_a_save_removes_it_and_restores_the_evicted_entry() {
     let d = tmp_root_with_carts(&["Emerald"]);
-    let r = StateRing::new(d.path(), Core::Mgba, "Emerald");
+    let r = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
     for i in 0..10 {
         r.push(&[i as u8; 64], b"png", &format!("2026-08-09_00-00-{i:02}"))
             .unwrap();
@@ -43,7 +42,7 @@ fn undo_expires_after_thirty_seconds() {
 #[test]
 fn a_second_save_replaces_the_undo_rather_than_stacking() {
     let d = tmp_root_with_carts(&["Emerald"]);
-    let r = StateRing::new(d.path(), Core::Mgba, "Emerald");
+    let r = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
     let mut a = app_playing_in(d.path(), "Emerald");
     a.apply_at(Action::SaveState, 1_000);
     a.apply_at(Action::SaveState, 2_000);
@@ -79,8 +78,6 @@ fn undo_is_not_offered_when_nothing_is_undoable() {
     assert!(!a.undo_available(0));
 }
 
-/// Which of the two it is has to reach the affordance, or the screen offers to undo a save
-/// while it is holding a load.
 #[test]
 fn the_label_names_what_will_be_undone() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -91,13 +88,10 @@ fn the_label_names_what_will_be_undone() {
     assert_eq!(a.undo_label(), Some(lang::UNDO_LOAD));
 }
 
-/// The affordance is the switcher's and nowhere else's, so the button that works it is only
-/// the switcher's too. X never reaches the core, but it is still not the shelf's or the
-/// game's to spend.
 #[test]
 fn x_undoes_from_the_switcher_and_never_from_the_game() {
     let d = tmp_root_with_carts(&["Emerald"]);
-    let r = StateRing::new(d.path(), Core::Mgba, "Emerald");
+    let r = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
     let mut a = app_playing_in(d.path(), "Emerald");
     a.apply_at(Action::SaveState, 1_000);
     a.apply_at(Action::GbaDown(Btn::X), 1_100);
@@ -108,12 +102,10 @@ fn x_undoes_from_the_switcher_and_never_from_the_game() {
     assert!(r.list().unwrap().is_empty(), "X did not undo the save");
 }
 
-/// An undo is a one shot. A second press would otherwise put the save back, which is a redo,
-/// and a redo is a knob.
 #[test]
 fn undoing_twice_does_not_put_the_save_back() {
     let d = tmp_root_with_carts(&["Emerald"]);
-    let r = StateRing::new(d.path(), Core::Mgba, "Emerald");
+    let r = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
     let mut a = app_playing_in(d.path(), "Emerald");
     a.apply_at(Action::SaveState, 1_000);
     a.undo(2_000);
@@ -122,8 +114,6 @@ fn undoing_twice_does_not_put_the_save_back() {
     assert!(!a.undo_available(3_000));
 }
 
-/// The undo names a file under one cart's ring and a state only that cart's core can read.
-/// Carried across an eject it would either delete the wrong save or feed the wrong machine.
 #[test]
 fn ejecting_the_cart_takes_its_undo_with_it() {
     let d = tmp_root_with_carts(&["Emerald", "Fusion"]);
@@ -133,15 +123,11 @@ fn ejecting_the_cart_takes_its_undo_with_it() {
     assert!(!a.undo_available(1_200));
 }
 
-/// The offer is drawn on the switcher and nowhere else, and it goes when the grace period
-/// does rather than sitting there being pressed to no effect.
 #[test]
 fn the_plate_is_drawn_only_over_the_switcher_and_only_while_the_offer_stands() {
     let d = tmp_root_with_carts(&["Emerald"]);
     let mut a = app_playing_in(d.path(), "Emerald");
     a.apply_at(Action::SaveState, 1_000);
-    // A save says so on screen for 1.5 s, which is not the offer. Wait it out: the offer
-    // has thirty seconds and must still be standing, and must still draw nothing.
     a.tick_ms(4_000);
     let mut playing = Vec::new();
     a.draw(&mut playing);
@@ -151,8 +137,6 @@ fn the_plate_is_drawn_only_over_the_switcher_and_only_while_the_offer_stands() {
     );
     assert!(playing.is_empty(), "the offer reached the game");
 
-    // Open the switcher with the toast already faded, so the only difference between the
-    // two draws below is the offer itself.
     a.apply_at(Action::Polaroids, 4_000);
     let mut open = Vec::new();
     a.draw(&mut open);

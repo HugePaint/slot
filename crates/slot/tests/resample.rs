@@ -54,6 +54,28 @@ fn a_starved_ratio_stretches_and_a_full_one_compresses() {
 }
 
 #[test]
+fn a_core_rate_that_is_not_a_rate_passes_the_samples_through() {
+    for (name, hz) in [
+        ("nan", f64::NAN),
+        ("infinity", f64::INFINITY),
+        ("zero", 0.0),
+        ("negative", -32768.0),
+    ] {
+        let mut r = Resampler::new(hz, 48_000.0);
+        let mut out = Vec::new();
+        let src = ramp(64);
+        r.process(&src, &mut out);
+        assert_eq!(
+            out.len(),
+            src.len(),
+            "a core rate of {name} produced {} frames from {}",
+            out.len() / 2,
+            src.len() / 2
+        );
+    }
+}
+
+#[test]
 fn the_output_rate_follows_the_device_not_the_core() {
     let mut r = Resampler::new(32768.0, 48000.0);
     let mut out = Vec::new();

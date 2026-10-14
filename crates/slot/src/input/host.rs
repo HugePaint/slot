@@ -10,6 +10,7 @@ pub struct HostInput {
     pending: Vec<RawEvent>,
     pad: Option<Gilrs>,
     lid_closed: bool,
+    held_keys: Vec<Btn>,
 }
 
 impl HostInput {
@@ -18,22 +19,30 @@ impl HostInput {
             pending: Vec::new(),
             pad: Gilrs::new().ok(),
             lid_closed: false,
+            held_keys: Vec::new(),
         }
     }
 
     pub fn on_window_event(&mut self, event: &WindowEvent) {
-        let WindowEvent::KeyboardInput { event, .. } = event else {
-            return;
-        };
-        let PhysicalKey::Code(code) = event.physical_key else {
-            return;
-        };
-        self.key(code, event.state.is_pressed(), event.repeat);
+        match event {
+            WindowEvent::Focused(false) => self.release_keys(),
+            WindowEvent::KeyboardInput { event, .. } => {
+                let PhysicalKey::Code(code) = event.physical_key else {
+                    return;
+                };
+                self.key(code, event.state.is_pressed(), event.repeat);
+            }
+            _ => {}
+        }
+    }
+
+    fn release_keys(&mut self) {
+        for btn in std::mem::take(&mut self.held_keys) {
+            self.pending.push(RawEvent::Up(btn));
+        }
     }
 
     pub fn key(&mut self, code: KeyCode, pressed: bool, repeat: bool) {
-        // Autorepeat is a stream of presses with no release, which would re-arm every hold
-        // and double tap window downstream.
         if repeat {
             return;
         }
@@ -41,7 +50,6 @@ impl HostInput {
             return;
         };
         if btn == Btn::Lid {
-            // The host has no hinge, so L latches: press to close, press again to open.
             if pressed {
                 self.lid_closed = !self.lid_closed;
                 self.pending.push(if self.lid_closed {
@@ -52,10 +60,18 @@ impl HostInput {
             }
             return;
         }
+        match pressed {
+            true if !self.held_keys.contains(&btn) => self.held_keys.push(btn),
+            true => {}
+            false => self.held_keys.retain(|b| *b != btn),
+        }
         self.push(btn, pressed);
     }
 
     fn push(&mut self, btn: Btn, pressed: bool) {
+        if pressed {
+            crate::latency::read();
+        }
         self.pending.push(if pressed {
             RawEvent::Down(btn)
         } else {

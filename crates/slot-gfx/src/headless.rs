@@ -1,7 +1,3 @@
-//! An offscreen GL context, for readback checks that must not open a window. CGL is used
-//! directly rather than through glutin because glutin's macOS path hops to the main thread,
-//! which a test harness never services.
-
 use crate::surface::{GfxError, Surface, OUT_H, OUT_W};
 use libloading::Library;
 use std::ffi::{c_void, CString};
@@ -31,8 +27,6 @@ pub struct HeadlessSurface {
 }
 
 impl HeadlessSurface {
-    /// Creates the context and makes it current on the calling thread. A CGL context is
-    /// per thread, so it must be used from the thread that built it.
     pub fn new() -> Result<Self, GfxError> {
         let lib = unsafe { Library::new(FRAMEWORK) }
             .map_err(|e| GfxError::Context(format!("opengl framework: {e}")))?;

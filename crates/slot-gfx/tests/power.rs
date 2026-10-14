@@ -10,7 +10,6 @@ fn power_on_expands_from_a_line_to_the_full_frame() {
     );
 }
 
-/// The overshoot is what makes it read as a tube or panel striking rather than a wipe.
 #[test]
 fn the_brightness_overshoots_before_it_settles() {
     let peak = (0..=100)
@@ -23,8 +22,6 @@ fn the_brightness_overshoots_before_it_settles() {
     );
 }
 
-/// The picture ends as a dot, not as a line the full width of the screen. Only the last of
-/// the collapse does it, or the whole power on reads as an iris rather than a panel.
 #[test]
 fn the_line_closes_to_a_dot_at_the_very_end() {
     assert!(screen_width(0.0) < 0.02, "the line never closes to a dot");

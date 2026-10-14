@@ -5,21 +5,67 @@ use slot_input::{
 };
 
 #[test]
-fn select_alone_reaches_the_game_after_the_chord_window() {
+fn a_select_that_becomes_a_chord_never_reaches_the_game() {
     let mut g = Gestures::new();
-    assert!(g.feed(Down(Select), 0).is_empty()); // deferred, not swallowed
-    assert!(g.tick(SELECT_CHORD_MS - 1).is_empty());
-    assert_eq!(g.tick(SELECT_CHORD_MS), vec![GbaDown(Select)]);
+    assert!(g.feed(Down(Select), 0).is_empty());
+    assert_eq!(g.feed(Down(Btn::Up), 120), vec![BrightnessUp]);
+    assert!(g.feed(Up(Btn::Up), 160).is_empty());
+    assert!(g.feed(Up(Select), 900).is_empty());
+    assert!(g.tick(5_000).is_empty());
 }
 
 #[test]
-fn select_chord_swallows_select_entirely() {
+fn a_chord_keeps_both_keys_from_the_game() {
+    let mut g = Gestures::new();
+    assert!(g.feed(Down(Select), 0).is_empty());
+    assert_eq!(g.feed(Down(R1), 50), vec![SaveState]);
+    assert!(
+        g.feed(Up(R1), 60).is_empty(),
+        "the chord key reached the game"
+    );
+    assert!(
+        g.feed(Up(Select), 70).is_empty(),
+        "the chord's SELECT reached the game"
+    );
+}
+
+#[test]
+fn a_select_held_past_the_window_reaches_the_game_then() {
+    let mut g = Gestures::new();
+    assert!(g.feed(Down(Select), 0).is_empty());
+    assert!(g.tick(SELECT_CHORD_MS - 1).is_empty());
+    assert_eq!(g.tick(SELECT_CHORD_MS), vec![GbaDown(Select)]);
+    assert!(g.tick(SELECT_CHORD_MS + 100).is_empty());
+    assert_eq!(g.feed(Up(Select), 2_000), vec![GbaUp(Select)]);
+}
+
+#[test]
+fn a_game_button_under_select_hands_select_over_first() {
+    let mut g = Gestures::new();
+    assert!(g.feed(Down(Select), 0).is_empty());
+    assert_eq!(
+        g.feed(Down(B), 100),
+        vec![GbaDown(Select), GbaDown(B)]
+    );
+    assert_eq!(g.feed(Up(B), 200), vec![GbaUp(B)]);
+    assert!(
+        g.tick(SELECT_CHORD_MS).is_empty(),
+        "SELECT was pressed twice"
+    );
+    assert_eq!(g.feed(Up(Select), 900), vec![GbaUp(Select)]);
+}
+
+#[test]
+fn a_held_select_keeps_chording_long_past_the_window() {
     let mut g = Gestures::new();
     g.feed(Down(Select), 0);
-    assert_eq!(g.feed(Down(R1), 50), vec![SaveState]);
-    assert!(g.tick(500).is_empty()); // SELECT never reaches the game
-    assert!(g.feed(Up(R1), 60).is_empty());
-    assert!(g.feed(Up(Select), 70).is_empty());
+    assert_eq!(g.feed(Down(Btn::Up), 100), vec![BrightnessUp]);
+    g.feed(Up(Btn::Up), 150);
+    assert_eq!(
+        g.feed(Down(Btn::Up), SELECT_CHORD_MS + 500),
+        vec![BrightnessUp],
+        "the second nudge of the brightness reached the game as a direction"
+    );
 }
 
 #[test]
@@ -29,18 +75,6 @@ fn select_chords_map_to_all_four_axes() {
         (Btn::Down, BrightnessDown),
         (Right, BlueLightUp),
         (Left, BlueLightDown),
-    ] {
-        let mut g = Gestures::new();
-        g.feed(RawEvent::Down(Select), 0);
-        assert_eq!(g.feed(RawEvent::Down(btn), 10), vec![want]);
-    }
-}
-
-#[test]
-fn select_and_volume_keys_switch_the_audio_profile() {
-    for (btn, want) in [
-        (Btn::VolUp, AudioProfileNext),
-        (Btn::VolDown, AudioProfilePrev),
     ] {
         let mut g = Gestures::new();
         g.feed(RawEvent::Down(Select), 0);
@@ -81,24 +115,53 @@ fn start_alone_is_still_the_game_button() {
 #[test]
 fn select_released_inside_the_window_still_reaches_the_game() {
     let mut g = Gestures::new();
-    g.feed(Down(Select), 0);
-    assert_eq!(g.feed(Up(Select), 40), vec![GbaDown(Select)]);
-    assert_eq!(g.tick(40 + SELECT_TAP_MS), vec![GbaUp(Select)]);
-    assert!(g.tick(1_000).is_empty());
+    assert!(g.feed(Down(Select), 0).is_empty());
+    assert_eq!(g.feed(Up(Select), 80), vec![GbaDown(Select)]);
+    assert!(g.tick(80 + SELECT_TAP_MS - 1).is_empty());
+    assert_eq!(g.tick(80 + SELECT_TAP_MS), vec![GbaUp(Select)]);
+    assert!(g.tick(5_000).is_empty());
 }
 
-/// A tap of MENU opens the about screen, on the release. The other two MENU gestures are
-/// unchanged: a tap was the one press this button did not already mean something by.
 #[test]
-fn menu_single_tap_opens_the_about_screen() {
+fn a_select_press_inside_the_tap_window_hands_back_the_release_it_interrupted() {
+    let mut g = Gestures::new();
+    let mut log = Vec::new();
+    log.extend(g.feed(Down(Select), 0));
+    log.extend(g.feed(Up(Select), 20));
+    log.extend(g.feed(Down(Select), 20 + SELECT_TAP_MS - 1));
+    log.extend(g.feed(Down(Btn::Up), 100));
+    log.extend(g.feed(Up(Btn::Up), 140));
+    log.extend(g.feed(Up(Select), 200));
+    for t in 200..2_000 {
+        log.extend(g.tick(t));
+    }
+    let downs = log.iter().filter(|a| **a == GbaDown(Select)).count();
+    let ups = log.iter().filter(|a| **a == GbaUp(Select)).count();
+    assert_eq!(
+        (downs, ups),
+        (1, 1),
+        "the core was handed {downs} SELECT press(es) and {ups} release(s): {log:?}"
+    );
+    assert_eq!(
+        log.iter()
+            .rfind(|a| matches!(a, GbaDown(Select) | GbaUp(Select))),
+        Some(&GbaUp(Select)),
+        "the pad was left holding SELECT: {log:?}"
+    );
+    assert!(
+        log.contains(&BrightnessUp),
+        "the chord off the second press stopped working: {log:?}"
+    );
+}
+
+#[test]
+fn menu_single_tap_opens_the_quick_menu() {
     let mut g = Gestures::new();
     assert!(g.feed(Down(Menu), 0).is_empty(), "acted on the press");
-    assert_eq!(g.feed(Up(Menu), 100), vec![OpenAbout]);
+    assert_eq!(g.feed(Up(Menu), 100), vec![QuickMenu]);
     assert!(g.tick(451).is_empty(), "fired a second time on the timer");
 }
 
-/// The hold is an eject and nothing else. A press long enough to eject is not also a tap, or
-/// letting go of one would drop the about screen over the shelf the cart just came back to.
 #[test]
 fn a_menu_hold_is_not_also_a_tap() {
     let mut g = Gestures::new();
@@ -142,16 +205,13 @@ fn r2_hold_is_momentary() {
 fn r2_double_tap_latches_and_single_press_clears() {
     let mut g = Gestures::new();
     g.feed(Down(R2), 0);
-    g.feed(Up(R2), 50); // tap 1
+    g.feed(Up(R2), 50);
     g.feed(Down(R2), 100);
-    assert!(g.feed(Up(R2), 150).is_empty()); // latched, FF stays on
+    assert!(g.feed(Up(R2), 150).is_empty());
     g.feed(Down(R2), 5000);
     assert_eq!(g.feed(Up(R2), 5050), vec![FfStop]);
 }
 
-/// The flush hangs off the press, because a button being held may be cut by the PMIC before
-/// there is any release to see. The lock waits for the release, so that a press on its way
-/// to becoming a hold does not darken the panel on the way through.
 #[test]
 fn power_flushes_on_the_press_and_locks_on_the_release() {
     let mut g = Gestures::new();
@@ -159,8 +219,6 @@ fn power_flushes_on_the_press_and_locks_on_the_release() {
     assert_eq!(g.feed(Up(Btn::Power), 80), vec![PowerTap]);
 }
 
-/// The hold arms while the button is still down and the release commits, so the shutdown
-/// screen is on the panel for as long as the user holds rather than flashing past.
 #[test]
 fn power_held_past_the_threshold_raises_the_menu_and_the_release_does_nothing() {
     let mut g = Gestures::new();
@@ -171,7 +229,6 @@ fn power_held_past_the_threshold_raises_the_menu_and_the_release_does_nothing() 
     assert_eq!(g.feed(Up(Btn::Power), 4500), vec![PowerOff]);
 }
 
-/// And a release that never reached the threshold is a lock, never a shutdown.
 #[test]
 fn a_press_just_short_of_the_threshold_is_a_lock() {
     let mut g = Gestures::new();
@@ -181,24 +238,47 @@ fn a_press_just_short_of_the_threshold_is_a_lock() {
 }
 
 #[test]
+fn a_press_the_rewind_turned_away_is_not_half_of_a_latch() {
+    let mut g = Gestures::new();
+    assert_eq!(g.feed(Down(L2), 0), vec![RewindStart]);
+    assert!(
+        g.feed(Down(R2), 50).is_empty(),
+        "the rewind let a fast forward start under it"
+    );
+    assert!(g.feed(Up(R2), 100).is_empty());
+    assert_eq!(g.feed(Up(L2), 150), vec![RewindStop]);
+    assert_eq!(g.feed(Down(R2), 200), vec![FfStart]);
+    assert!(!g.ff_latched(), "a single press latched fast forward");
+    assert_eq!(
+        g.feed(Up(R2), 400),
+        vec![FfStop],
+        "the finger came off R2 and the speed stayed"
+    );
+}
+
+#[test]
 fn rewind_beats_latched_fast_forward() {
     let mut g = Gestures::new();
     g.feed(Down(R2), 0);
     g.feed(Up(R2), 50);
     g.feed(Down(R2), 100);
-    g.feed(Up(R2), 150); // latched
+    g.feed(Up(R2), 150);
     assert_eq!(g.feed(Down(L2), 200), vec![FfStop, RewindStart]);
 }
 
-/// 120 ms was not enough time to land the second key of a chord, so SELECT reached the game
-/// and opened a menu mid press. A held SELECT can wait much longer: the only reason to ever
-/// give up on the chord is a game that wants SELECT held down.
 #[test]
-fn a_held_select_waits_much_longer_than_it_used_to() {
+fn past_the_window_select_and_the_next_key_are_the_games() {
     let mut g = Gestures::new();
-    g.feed(Down(Select), 0);
-    assert!(g.tick(400).is_empty(), "gave up on the chord at 400 ms");
+    assert!(g.feed(Down(Select), 0).is_empty());
+    assert!(
+        g.tick(400).is_empty(),
+        "SELECT was handed over inside its window"
+    );
     assert_eq!(g.tick(SELECT_CHORD_MS), vec![GbaDown(Select)]);
+    assert_eq!(
+        g.feed(Down(Btn::Up), SELECT_CHORD_MS + 1),
+        vec![GbaDown(Btn::Up)]
+    );
 }
 
 #[test]
@@ -209,36 +289,33 @@ fn a_chord_landing_late_is_still_a_chord() {
     assert_eq!(g.feed(Down(R1), 400), vec![SaveState]);
     assert!(
         g.tick(5_000).is_empty(),
-        "SELECT leaked to the game after a late chord"
+        "the tick handed something over behind a late chord"
     );
 }
 
-/// The other half: releasing SELECT settles the question, so a tap should cost the game no
-/// latency at all rather than waiting out a window that can no longer produce a chord.
 #[test]
-fn a_released_select_reaches_the_game_immediately() {
+fn a_select_tap_too_short_to_be_polled_is_held_on_to() {
     let mut g = Gestures::new();
-    g.feed(Down(Select), 0);
-    assert_eq!(g.feed(Up(Select), 80), vec![GbaDown(Select)]);
+    assert!(g.feed(Down(Select), 0).is_empty());
+    assert_eq!(g.feed(Up(Select), 20), vec![GbaDown(Select)]);
+    assert!(g.tick(20 + SELECT_TAP_MS - 1).is_empty());
+    assert_eq!(g.tick(20 + SELECT_TAP_MS), vec![GbaUp(Select)]);
+    assert!(
+        g.tick(5_000).is_empty(),
+        "the release was handed over twice"
+    );
 }
 
-/// Down and up in one batch net out to nothing: the mask is set and cleared before the core
-/// ever reads it, so the press is invisible to the game.
 #[test]
-fn a_select_tap_is_held_long_enough_for_the_core_to_see_it() {
+fn a_select_the_game_has_seen_ends_on_its_own_release() {
     let mut g = Gestures::new();
     g.feed(Down(Select), 0);
-    let on_release = g.feed(Up(Select), 80);
-    assert_eq!(on_release, vec![GbaDown(Select)]);
-    assert!(
-        !on_release.contains(&GbaUp(Select)),
-        "press and release in the same frame"
+    assert_eq!(g.tick(SELECT_CHORD_MS), vec![GbaDown(Select)]);
+    assert_eq!(
+        g.feed(Up(Select), SELECT_CHORD_MS + SELECT_TAP_MS),
+        vec![GbaUp(Select)]
     );
-    assert!(
-        g.tick(100).is_empty(),
-        "released before the core could poll it"
-    );
-    assert_eq!(g.tick(80 + SELECT_TAP_MS), vec![GbaUp(Select)]);
+    assert!(g.tick(5_000).is_empty());
 }
 
 #[test]
@@ -261,8 +338,6 @@ fn volume_keys_far_apart_are_not_a_chord() {
     assert!(!out.contains(&MuteToggle), "two separate presses muted");
 }
 
-/// The app rolls the chord's own two presses back, so it has to see them before it sees the
-/// chord. Reversed, the second press would move the level after the mute remembered it.
 #[test]
 fn the_chord_arrives_behind_the_press_that_completed_it() {
     let mut g = Gestures::new();
@@ -270,7 +345,6 @@ fn the_chord_arrives_behind_the_press_that_completed_it() {
     assert_eq!(g.feed(Down(VolDown), 80), vec![VolumeDown, MuteToggle]);
 }
 
-/// Unmuting is the same gesture, so a pair that never rearmed would be a one way trip.
 #[test]
 fn releasing_both_rearms_the_chord() {
     let mut g = Gestures::new();
@@ -282,8 +356,6 @@ fn releasing_both_rearms_the_chord() {
     assert!(g.feed(Down(VolDown), 1_050).contains(&MuteToggle));
 }
 
-/// A held volume key ramps. One step per press would mean tapping a dozen times to cross the
-/// range, and the press already records when it went down for exactly this.
 #[test]
 fn a_held_volume_key_repeats() {
     let mut g = Gestures::new();
@@ -312,8 +384,6 @@ fn a_released_volume_key_stops_repeating() {
     );
 }
 
-/// Both keys held is the mute chord, not two levels moving at once. The ramp would fight the
-/// mute it just fired and leave the level somewhere nobody asked for.
 #[test]
 fn the_mute_chord_does_not_ramp() {
     let mut g = Gestures::new();
@@ -325,8 +395,6 @@ fn the_mute_chord_does_not_ramp() {
     );
 }
 
-/// A second press after the ramp starts from the top again, rather than inheriting the pace
-/// of the press before it.
 #[test]
 fn each_press_starts_its_own_ramp() {
     let mut g = Gestures::new();
@@ -341,7 +409,6 @@ fn each_press_starts_its_own_ramp() {
     assert_eq!(g.tick(5_000 + VOLUME_REPEAT_DELAY_MS), vec![VolumeUp]);
 }
 
-/// X on its own is the game's X. A chord key is only a chord while SELECT is down.
 #[test]
 fn x_without_select_is_still_the_games_x() {
     let mut g = Gestures::new();
@@ -349,8 +416,6 @@ fn x_without_select_is_still_the_games_x() {
     assert_eq!(g.feed(Up(X), 40), vec![GbaUp(Btn::X)]);
 }
 
-/// SELECT+MENU, which is what opens the in-game menu. One gesture, not two: it fires on the
-/// MENU press and the release says nothing at all.
 #[test]
 fn select_and_menu_open_the_in_game_menu() {
     let mut g = Gestures::new();
@@ -360,14 +425,9 @@ fn select_and_menu_open_the_in_game_menu() {
         g.feed(Up(Menu), 150).is_empty(),
         "the release landed as a second gesture on top of the menu"
     );
-    assert!(
-        g.feed(Up(Select), 200).is_empty(),
-        "SELECT reached the game behind the chord that consumed it"
-    );
+    assert!(g.feed(Up(Select), 200).is_empty());
 }
 
-/// The chorded press must not also arm the eject hold, or reading the menu with the buttons
-/// still down would eject the cart out from under it.
 #[test]
 fn a_chorded_menu_never_arms_the_eject_hold() {
     let mut g = Gestures::new();
@@ -379,13 +439,11 @@ fn a_chorded_menu_never_arms_the_eject_hold() {
     );
 }
 
-/// The whole test is the ordering inside `menu_down`. Behind the double tap check, a
-/// SELECT+MENU that follows a recent MENU tap opens the switcher instead of the menu.
 #[test]
 fn a_chord_after_a_recent_menu_tap_is_still_the_menu() {
     let mut g = Gestures::new();
     g.feed(Down(Menu), 0);
-    assert_eq!(g.feed(Up(Menu), 100), vec![OpenAbout]);
+    assert_eq!(g.feed(Up(Menu), 100), vec![QuickMenu]);
     g.feed(Down(Select), 150);
     assert_eq!(
         g.feed(Down(Menu), 200),
@@ -394,31 +452,23 @@ fn a_chord_after_a_recent_menu_tap_is_still_the_menu() {
     );
 }
 
-/// The difference between a chord and a trap. SELECT commits to being the game's after
-/// `SELECT_CHORD_MS`, and MENU under a SELECT the game already has is an ordinary MENU.
 #[test]
 fn menu_under_a_select_the_game_already_has_is_not_the_menu() {
     let mut g = Gestures::new();
-    g.feed(Down(Select), 0);
+    assert!(g.feed(Down(Select), 0).is_empty());
     assert_eq!(g.tick(SELECT_CHORD_MS), vec![GbaDown(Select)]);
     assert!(
         g.feed(Down(Menu), 700).is_empty(),
         "a SELECT the game already owns still chorded"
     );
-    assert_eq!(g.feed(Up(Menu), 800), vec![OpenAbout]);
+    assert_eq!(g.feed(Up(Menu), 800), vec![QuickMenu]);
 }
 
-/// The chord clears both of MENU's own windows, so the press after it has to start its own.
-///
-/// It has to begin with a real tap, or the half of that which matters is invisible: the tap
-/// leaves a double tap window open, the chord lands inside it, and a chord that does not
-/// close that window leaves the very next MENU tap opening the switcher instead of the about
-/// screen — a press whose meaning depends on a chord two presses ago.
 #[test]
 fn the_menu_button_still_works_after_a_chord() {
     let mut g = Gestures::new();
     g.feed(Down(Menu), 0);
-    assert_eq!(g.feed(Up(Menu), 100), vec![OpenAbout]);
+    assert_eq!(g.feed(Up(Menu), 100), vec![QuickMenu]);
     g.feed(Down(Select), 150);
     assert_eq!(g.feed(Down(Menu), 200), vec![GameMenu]);
     assert!(g.feed(Up(Menu), 250).is_empty());
@@ -429,7 +479,7 @@ fn the_menu_button_still_works_after_a_chord() {
     );
     assert_eq!(
         g.feed(Up(Menu), 450),
-        vec![OpenAbout],
+        vec![QuickMenu],
         "the chord left the menu button dead"
     );
 }
@@ -592,5 +642,70 @@ fn the_y_button_still_works_after_a_chord() {
             "a bare Y after the {label} chord was not the game's"
         );
         assert_eq!(g.feed(Up(Y), 5040), vec![GbaUp(Y)]);
+    }
+}
+
+#[test]
+fn select_and_l2_or_r2_steps_the_palette_without_rewinding_or_fast_forwarding() {
+    let mut g = Gestures::new();
+    assert!(g.feed(Down(Select), 0).is_empty());
+    assert_eq!(g.feed(Down(R2), 10), vec![PaletteNext]);
+    assert!(g.feed(Up(R2), 40).is_empty());
+    assert_eq!(g.feed(Down(L2), 60), vec![PalettePrev]);
+    assert!(g.feed(Up(L2), 90).is_empty());
+    assert!(g.feed(Up(Select), 200).is_empty());
+}
+
+#[test]
+fn l2_and_r2_on_their_own_still_rewind_and_fast_forward() {
+    let mut g = Gestures::new();
+    assert_eq!(g.feed(Down(L2), 0), vec![RewindStart]);
+    assert_eq!(g.feed(Up(L2), 40), vec![RewindStop]);
+    assert!(!g.feed(Down(R2), 60).contains(&PaletteNext));
+    assert!(!g.feed(Up(R2), 90).contains(&PaletteNext));
+}
+
+#[test]
+fn select_and_a_toggles_cheats_and_costs_the_game_nothing() {
+    let mut g = Gestures::new();
+    assert!(g.feed(Down(Select), 0).is_empty());
+    assert_eq!(g.feed(Down(A), 10), vec![CheatToggle]);
+    assert!(g.feed(Up(A), 40).is_empty());
+    assert!(g.feed(Up(Select), 200).is_empty());
+}
+
+#[test]
+fn select_and_x_cycles_the_mask_and_costs_the_game_nothing() {
+    let mut g = Gestures::new();
+    assert!(g.feed(Down(Select), 0).is_empty());
+    assert_eq!(g.feed(Down(X), 10), vec![MaskCycle]);
+    assert!(g.feed(Up(X), 40).is_empty());
+    assert!(g.feed(Up(Select), 200).is_empty());
+}
+
+#[test]
+fn a_and_b_on_their_own_are_still_the_games() {
+    let mut g = Gestures::new();
+    assert_eq!(g.feed(Down(A), 0), vec![GbaDown(A)]);
+    assert_eq!(g.feed(Up(A), 40), vec![GbaUp(A)]);
+    assert_eq!(g.feed(Down(B), 60), vec![GbaDown(B)]);
+    assert_eq!(g.feed(Up(B), 90), vec![GbaUp(B)]);
+}
+
+#[test]
+fn select_and_either_volume_key_mutes_for_a_volume_wheel_with_no_chord() {
+    for vol in [VolUp, VolDown] {
+        let mut g = Gestures::new();
+        assert!(g.feed(Down(Select), 0).is_empty());
+        assert_eq!(g.feed(Down(vol), 100), vec![MuteToggle], "{vol:?}");
+        assert!(
+            g.tick(100 + VOLUME_REPEAT_DELAY_MS * 3).is_empty(),
+            "{vol:?} ramped the volume under SELECT"
+        );
+        assert!(g.feed(Up(vol), 900).is_empty(), "{vol:?}");
+        assert!(
+            g.feed(Up(Select), 950).is_empty(),
+            "the mute chord's SELECT reached the game"
+        );
     }
 }

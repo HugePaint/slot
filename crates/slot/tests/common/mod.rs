@@ -10,23 +10,29 @@ use slot::persist::Snapshot;
 use slot::session::Session;
 use slot_power::{Battery, Charge, LedState, Motor, Platform, Power, SimPlatform};
 use slot_retro::{ButtonMask, MockCore, RetroCore};
-use slot_store::{write_slot_state, SlotState};
+use slot_store::{write_slot_state, Platform as CartPlatform, SlotState};
 use tempfile::TempDir;
 
-/// What the emulator was last told to load. `None` until something loads.
 pub type Loaded = Arc<Mutex<Option<Vec<u8>>>>;
 
-/// A libretro core keeps its machine in dylib globals, so two live cores is not a
-/// configuration any test in this crate may reach — `LIVE` (`slot_retro::libretro`) refuses
-/// the second one and `open_core_for` falls back to the mock, which makes a test that opens a
-/// real core race under CPU contention and fail looking exactly like the regression it was
-/// meant to catch. Every test in this crate that opens a real dylib takes `core_lock()` first.
-/// Shared here rather than declared per file: three separate copies of this same `Mutex` was
-/// the duplication that let a fourth file (`gpsp.rs`) go without one.
 static CORE_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn core_lock() -> MutexGuard<'static, ()> {
     CORE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub fn free_port() -> u16 {
+    std::net::TcpListener::bind(("127.0.0.1", 0))
+        .expect("loopback would not give out a port")
+        .local_addr()
+        .expect("a bound listener with no address")
+        .port()
+}
+
+static LINK_PORT_LOCK: Mutex<()> = Mutex::new(());
+
+pub fn link_port_lock() -> MutexGuard<'static, ()> {
+    LINK_PORT_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 pub fn tmp_root_with_carts(stems: &[&str]) -> TempDir {
@@ -40,8 +46,25 @@ pub fn tmp_root_with_carts(stems: &[&str]) -> TempDir {
     d
 }
 
-/// The headers `tmp_root_with_carts` writes are not roms, and a real core refuses them.
-/// Anything that puts a cart in the slot for real needs these instead.
+pub fn tmp_root_with_gb_carts(stems: &[&str]) -> TempDir {
+    let d = tmp_root();
+    for stem in stems {
+        let title = stem.to_uppercase();
+        write_gb_cart(&d, stem, &title[..title.len().min(11)]);
+    }
+    d
+}
+
+pub fn write_gb_cart(d: &TempDir, stem: &str, title: &str) {
+    assert!(
+        title.len() <= 11,
+        "a Game Boy header title is eleven bytes, and {title:?} is longer"
+    );
+    let mut rom = vec![0u8; 0x150];
+    rom[0x134..0x134 + title.len()].copy_from_slice(title.as_bytes());
+    std::fs::write(cart_path(d, CartPlatform::Gb, stem), rom).expect("write rom");
+}
+
 pub fn tmp_root_with_real_carts(stems: &[&str]) -> TempDir {
     let d = tmp_root();
     for stem in stems {
@@ -59,17 +82,29 @@ fn tmp_root() -> TempDir {
 }
 
 fn rom_path(d: &TempDir, stem: &str) -> PathBuf {
-    d.path().join("Games").join(format!("{stem}.gba"))
+    cart_path(d, CartPlatform::Gba, stem)
 }
 
-/// Tests do not run from the workspace root, so anything reaching a file that is checked in
-/// has to get there from the crate.
+fn cart_path(d: &TempDir, platform: CartPlatform, stem: &str) -> PathBuf {
+    d.path()
+        .join("Games")
+        .join(platform.dir_name())
+        .join(format!("{stem}.{}", platform.extensions()[0]))
+}
+
+pub fn write_retail_header(d: &TempDir, stem: &str, title: &str, code: &str) {
+    let mut rom = vec![0u8; 0x100];
+    rom[3] = 0xEA;
+    rom[0xa0..0xa0 + title.len()].copy_from_slice(title.as_bytes());
+    rom[0xac..0xac + code.len()].copy_from_slice(code.as_bytes());
+    rom[0xb2] = 0x96;
+    std::fs::write(rom_path(d, stem), rom).expect("write rom");
+}
+
 pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The core `scripts/fetch-core.sh` pulls down. `None` when it has not been run, which is
-/// the case every test that names it has to skip or fall back around.
 pub fn vendored_core() -> Option<PathBuf> {
     let p = repo_root().join(format!(
         "vendor/mgba_libretro.{}",
@@ -78,32 +113,44 @@ pub fn vendored_core() -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
-/// Sets mode 3 and writes a frame counter into the first pixel once per vblank, so
-/// consecutive frames differ and a savestate has both registers and VRAM worth restoring.
+pub fn real_bios() -> Option<PathBuf> {
+    let p = repo_root().join("sdcard/BIOS/gba_bios.bin");
+    p.exists().then_some(p)
+}
+
+pub fn logo_rom() -> Option<Vec<u8>> {
+    let logo = std::fs::read_dir(repo_root().join("sdcard/Games/GBA"))
+        .ok()?
+        .find_map(|e| {
+            let p = e.ok()?.path();
+            let rom = (p.extension()? == "gba").then(|| std::fs::read(&p).ok())??;
+            (rom.get(4..8)? == [0x24, 0xff, 0xae, 0x51]).then(|| rom[4..0xa0].to_vec())
+        })?;
+    let mut rom = gba_rom();
+    rom[4..0xa0].copy_from_slice(&logo);
+    Some(rom)
+}
+
+pub fn mostly_lit(frame: &[u8]) -> bool {
+    let lit = frame
+        .chunks(4)
+        .filter(|p| p[0] > 0x40 && p[1] > 0x40 && p[2] > 0x40)
+        .count();
+    lit * 2 > (slot_retro::GBA_W * slot_retro::GBA_H) as usize
+}
+
 pub fn gba_rom() -> Vec<u8> {
     const CODE: [u32; 15] = [
-        0xe3a00404, // mov  r0, #0x04000000
-        0xe3a01c04, // mov  r1, #0x400
-        0xe3811003, // orr  r1, r1, #3
-        0xe5801000, // str  r1, [r0]          DISPCNT: mode 3, BG2 on
-        0xe3a02406, // mov  r2, #0x06000000
-        0xe3a03000, // mov  r3, #0
-        0xe1d040b6, // vb:  ldrh r4, [r0, #6] VCOUNT
-        0xe35400a0, //      cmp  r4, #160
-        0x1afffffc, //      bne  vb
-        0xe2833001, //      add  r3, r3, #1
-        0xe1c230b0, //      strh r3, [r2]
-        0xe1d040b6, // dr:  ldrh r4, [r0, #6]
-        0xe35400a0, //      cmp  r4, #160
-        0x0afffffc, //      beq  dr
-        0xeafffff6, //      b    vb
+        0xe3a00404, 0xe3a01c04, 0xe3811003, 0xe5801000, 0xe3a02406, 0xe3a03000, 0xe1d040b6,
+        0xe35400a0, 0x1afffffc, 0xe2833001, 0xe1c230b0, 0xe1d040b6, 0xe35400a0, 0x0afffffc,
+        0xeafffff6,
     ];
     let mut rom = vec![0u8; 0x8000];
-    rom[0..4].copy_from_slice(&0xea00002eu32.to_le_bytes()); // b 0xc0
+    rom[0..4].copy_from_slice(&0xea00002eu32.to_le_bytes());
     rom[0xa0..0xac].copy_from_slice(b"SLOT TEST\0\0\0");
     rom[0xac..0xb0].copy_from_slice(b"SLTE");
     rom[0xb0..0xb2].copy_from_slice(b"00");
-    rom[0xb2] = 0x96; // fixed header byte, cores sniff it to identify a GBA rom
+    rom[0xb2] = 0x96;
     let sum = rom[0xa0..0xbd].iter().fold(0u8, |a, b| a.wrapping_add(*b));
     rom[0xbd] = 0u8.wrapping_sub(sum).wrapping_sub(0x19);
     for (i, w) in CODE.iter().enumerate() {
@@ -113,7 +160,16 @@ pub fn gba_rom() -> Vec<u8> {
     rom
 }
 
-/// Stands in for the emulator worker at a flush point.
+pub fn write_real_cart_as(d: &TempDir, stem: &str, title: &str, code: &str) {
+    let mut rom = gba_rom();
+    rom[0xa0..0xac].fill(0);
+    rom[0xa0..0xa0 + title.len()].copy_from_slice(title.as_bytes());
+    rom[0xac..0xac + code.len()].copy_from_slice(code.as_bytes());
+    let sum = rom[0xa0..0xbd].iter().fold(0u8, |a, b| a.wrapping_add(*b));
+    rom[0xbd] = 0u8.wrapping_sub(sum).wrapping_sub(0x19);
+    std::fs::write(rom_path(d, stem), rom).expect("write rom");
+}
+
 pub struct StubSnapshot {
     pub state: Vec<u8>,
     pub sav: Option<Vec<u8>>,
@@ -156,9 +212,6 @@ impl Snapshot for StubSnapshot {
     }
 }
 
-/// A snapshot backed by a real core rather than by fixed bytes. Undoing a load is only
-/// meaningful against something that can be moved and read back, which the `App` itself
-/// cannot be asked for: it holds a `Snapshot`, never a core.
 #[derive(Clone, Default)]
 pub struct CoreSnapshot(Arc<Mutex<MockCore>>);
 
@@ -177,7 +230,6 @@ impl CoreSnapshot {
         self.with(|c| c.run_frame(ButtonMask::default()));
     }
 
-    /// Where the core actually is, as opposed to what the app last asked it for.
     pub fn bytes(&self) -> Vec<u8> {
         self.with(|c| c.serialize().expect("serialize"))
     }
@@ -205,8 +257,6 @@ impl Snapshot for CoreSnapshot {
     }
 }
 
-/// The stub device's hardware clock. It does not run: nothing in a test waits on a second
-/// passing, and a clock that moved would make every reading of it a race.
 #[derive(Clone, Default)]
 pub struct Clock(Arc<AtomicI64>);
 
@@ -218,36 +268,24 @@ impl Clock {
     pub fn get(&self) -> i64 {
         self.0.load(Ordering::Relaxed)
     }
+
+    pub fn advance(&self, secs: i64) {
+        self.0.fetch_add(secs, Ordering::Relaxed);
+    }
 }
 
-/// Stands in for the device the power path acts on.
 pub struct StubPlatform {
     backlight: Arc<AtomicU8>,
     root: PathBuf,
     clock: Clock,
-    /// 0 = Unknown, 1 = Discharging, 2 = Charging, 3 = Full. Shared so a test can move the
-    /// cable mid-run instead of having to rebuild the platform to change it.
     charge: Arc<AtomicU8>,
-    /// The gauge reading `battery()` hands back. Shared for the same reason `charge` is: a
-    /// test that wants to tell "the fast tick touched only the charge half" apart from "the
-    /// fast tick re-read the whole snapshot" has to be able to move this without the percent
-    /// moving with it.
     percent: Arc<AtomicU8>,
-    /// What `set_led` last wrote, coded by `led_code`. Shared so a test can watch what the
-    /// fast tick actually sent the platform rather than only what `App::led_state` computes
-    /// in isolation — that gap is what let the write itself be deleted with every test still
-    /// green.
     led: Arc<AtomicU8>,
-    /// How many times `set_led` was called. `led` alone cannot catch a write that repeats the
-    /// same state every tick forever: the value does not move, only the count would.
     led_writes: Arc<AtomicUsize>,
+    headphones: Arc<std::sync::atomic::AtomicBool>,
+    read_only: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// `LedState` has no `Copy`-friendly integer form of its own — it is deliberately opaque to
-/// everything on the far side of `Platform` — so the stub needs its own coding to carry a
-/// reading through an `AtomicU8` the same way `charge` already does. Public so a test can
-/// encode the state it expects `led` to hold, the same way it already compares against raw
-/// `charge`/`percent` values.
 pub fn led_code(state: LedState) -> u8 {
     match state {
         LedState::Off => 0,
@@ -258,10 +296,6 @@ pub fn led_code(state: LedState) -> u8 {
     }
 }
 
-/// The power object and the panel behind it, so a test can see what the app lit.
-/// A clock that reads like a real date. Not zero: a platform whose clock is at the epoch is
-/// one whose RTC never came up, and `set_power` sends that to the clock screen — where the
-/// levels are deliberately unreachable, which is not what a backlight test is asking about.
 pub const CLOCK_IS_SET: i64 = 1_786_568_000;
 
 pub fn panel(root: &Path, timeout: Duration) -> (Power, Arc<AtomicU8>) {
@@ -269,10 +303,6 @@ pub fn panel(root: &Path, timeout: Duration) -> (Power, Arc<AtomicU8>) {
     (power, backlight)
 }
 
-/// `panel`, but with the charge state and percent chosen instead of a healthy default — what
-/// a link-session test needs to drive `App::on_battery` through a real `timers` poll (via
-/// `Session::update`) rather than calling it directly, so the ending it triggers actually
-/// exercises `Session::bridge_link` instead of only `App`'s own bookkeeping.
 pub fn panel_with_battery(
     root: &Path,
     timeout: Duration,
@@ -288,10 +318,6 @@ fn rig(root: &Path, timeout: Duration, secs: i64) -> (Power, Arc<AtomicU8>, Cloc
     (power, backlight, clock)
 }
 
-/// The same rig, with the charge state and the percent seeded rather than left at their
-/// defaults, and both handed back so a test can move them independently. Kept apart from
-/// `rig` so every caller that does not care about either keeps its three-value return
-/// unchanged.
 fn rig_with_charge(
     root: &Path,
     timeout: Duration,
@@ -304,10 +330,6 @@ fn rig_with_charge(
     (power, backlight, clock, charge, percent)
 }
 
-/// The same rig again, with the platform's own record of the LED added to what a test can
-/// move or watch independently. Kept apart from `rig_with_charge` for the same reason that
-/// one is kept apart from `rig`: every caller that does not care leaves its return shape
-/// alone.
 #[allow(clippy::type_complexity)]
 fn rig_with_led(
     root: &Path,
@@ -328,8 +350,6 @@ fn rig_with_led(
     let clock = Clock::at(secs);
     let charge = Arc::new(AtomicU8::new(charge));
     let percent = Arc::new(AtomicU8::new(percent));
-    // u8::MAX codes as nothing `led_code` ever produces, so a test can tell "never written"
-    // apart from a real `LedState::Off` (which codes as 0).
     let led = Arc::new(AtomicU8::new(u8::MAX));
     let led_writes = Arc::new(AtomicUsize::new(0));
     let platform = StubPlatform {
@@ -340,6 +360,8 @@ fn rig_with_led(
         percent: percent.clone(),
         led: led.clone(),
         led_writes: led_writes.clone(),
+        headphones: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        read_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     (
         Power::new(Box::new(platform), timeout),
@@ -352,8 +374,6 @@ fn rig_with_led(
     )
 }
 
-/// A whole session over the host platform, which is the one implementation that records
-/// what the motor was last set to. `StubPlatform` has no motor: nothing else asks it.
 pub fn session_with_platform(root: &Path) -> (Session, Motor) {
     clocked(root);
     let platform = SimPlatform::at(root.to_path_buf());
@@ -365,7 +385,6 @@ pub fn session_with_platform(root: &Path) -> (Session, Motor) {
     (session, motor)
 }
 
-/// Booted onto the clock screen with a platform whose clock can be read back.
 pub fn app_booting_with_clock(root: &Path) -> (App, Clock) {
     app_booting_at(root, 0)
 }
@@ -398,9 +417,6 @@ impl Platform for StubPlatform {
         })
     }
 
-    /// Recorded rather than dropped: `App::led_state` alone cannot prove the fast tick ever
-    /// reaches the platform, or that it stops reaching it once the state stops moving. See
-    /// `led` and `led_writes`.
     fn set_led(&mut self, state: LedState) {
         self.led.store(led_code(state), Ordering::Relaxed);
         self.led_writes.fetch_add(1, Ordering::Relaxed);
@@ -426,13 +442,17 @@ impl Platform for StubPlatform {
         self.clock.0.store(secs, Ordering::Relaxed);
     }
 
-    /// No motor. `tests/rumble.rs` is the only test that reads one back and it runs over
-    /// `SimPlatform`, which records it.
     fn set_rumble(&mut self, _strength: u16) {}
+
+    fn headphones(&self) -> bool {
+        self.headphones.load(Ordering::Relaxed)
+    }
+
+    fn card_read_only(&self) -> bool {
+        self.read_only.load(Ordering::Relaxed)
+    }
 }
 
-/// Says the clock has already been confirmed. A root with no `clock_set` stops on the clock
-/// screen ahead of everything, which is only ever what `tests/clock.rs` is about.
 pub fn clocked(root: &Path) {
     let mut s = slot_store::read_slot_state(root);
     s.clock_set = true;
@@ -444,17 +464,46 @@ pub fn boot(root: &Path) -> App {
     App::boot(root)
 }
 
-/// Booted onto a seated cart and run past the insert floor, which is where every flush
-/// path starts.
 pub fn app_playing_in(root: &Path, stem: &str) -> App {
     app_playing_with(root, stem, StubSnapshot::boxed())
 }
 
-/// The same, wired to a platform whose charge state and percent a test can move
-/// independently mid-run. Starts Discharging at 50%, ordinary readings, so a test that
-/// never touches either cell still reads a state the device could have asserted rather
-/// than an idle default. Two cells rather than one, so a test can move the percent behind
-/// the charge tick's back and prove the fast tick never looked at it.
+pub fn app_playing_with_jack(root: &Path, stem: &str) -> (App, Arc<std::sync::atomic::AtomicBool>) {
+    let mut a = app_playing_with(root, stem, StubSnapshot::boxed());
+    let jack = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let platform = StubPlatform {
+        backlight: Arc::new(AtomicU8::new(0)),
+        root: root.to_path_buf(),
+        clock: Clock::at(CLOCK_IS_SET),
+        charge: Arc::new(AtomicU8::new(0)),
+        percent: Arc::new(AtomicU8::new(50)),
+        led: Arc::new(AtomicU8::new(u8::MAX)),
+        led_writes: Arc::new(AtomicUsize::new(0)),
+        headphones: jack.clone(),
+        read_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+    a.set_power(Power::new(Box::new(platform), Duration::from_secs(300)));
+    (a, jack)
+}
+
+pub fn app_playing_with_card(root: &Path, stem: &str) -> (App, Arc<std::sync::atomic::AtomicBool>) {
+    let mut a = app_playing_with(root, stem, StubSnapshot::boxed());
+    let read_only = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let platform = StubPlatform {
+        backlight: Arc::new(AtomicU8::new(0)),
+        root: root.to_path_buf(),
+        clock: Clock::at(CLOCK_IS_SET),
+        charge: Arc::new(AtomicU8::new(0)),
+        percent: Arc::new(AtomicU8::new(50)),
+        led: Arc::new(AtomicU8::new(u8::MAX)),
+        led_writes: Arc::new(AtomicUsize::new(0)),
+        headphones: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        read_only: read_only.clone(),
+    };
+    a.set_power(Power::new(Box::new(platform), Duration::from_secs(300)));
+    (a, read_only)
+}
+
 pub fn app_playing_with_charge(root: &Path, stem: &str) -> (App, Arc<AtomicU8>, Arc<AtomicU8>) {
     let mut a = app_playing_with(root, stem, StubSnapshot::boxed());
     let (power, _backlight, _clock, charge, percent) =
@@ -463,10 +512,6 @@ pub fn app_playing_with_charge(root: &Path, stem: &str) -> (App, Arc<AtomicU8>, 
     (a, charge, percent)
 }
 
-/// The same, with the platform's own record of the LED added: `App::led_state` is a pure
-/// function of the app's own fields and proves nothing about whether the fast tick ever
-/// reaches `Platform::set_led`, or how often. `led` and `led_writes` are what let a test
-/// watch the far side of that boundary instead of trusting it.
 pub fn app_playing_with_led(
     root: &Path,
     stem: &str,
@@ -484,16 +529,12 @@ pub fn app_playing_with_led(
     (a, charge, percent, led, led_writes)
 }
 
-/// The same, with the state switcher open over it. The ring has to have something in it
-/// already or the switcher refuses to open.
 pub fn app_in_switcher(root: &Path, stem: &str) -> App {
     let mut a = app_playing_in(root, stem);
     a.apply(slot_input::Action::Polaroids);
     a
 }
 
-/// The same, with the mixer already at a stated level. Written to the card rather than
-/// pressed in, since the keys only move by five and 0 and 100 are the interesting ones.
 pub fn app_playing_with_volume(root: &Path, volume: u8) -> App {
     seated(
         root,

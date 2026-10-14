@@ -84,14 +84,23 @@ pub fn label_font() -> Option<&'static Font> {
     USER_FONT.get().or_else(|| Some(embedded_font()))
 }
 
-/// Largest whole pixel size at which `text` wraps into `max_lines` or fewer whole words per
-/// line. Shrinking is preferred to hyphenless mid-word breaks, so a long title reads smaller
-/// rather than scrambled. Only a title that will not fit even at `min_px` is broken between
-/// characters and clipped to `max_lines`.
 pub fn fit(
     font: &Font,
     text: &str,
     max_w: f32,
+    max_lines: usize,
+    max_px: f32,
+    min_px: f32,
+) -> Layout {
+    fit_box(font, text, max_w, f32::INFINITY, max_lines, max_px, min_px)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn fit_box(
+    font: &Font,
+    text: &str,
+    max_w: f32,
+    max_h: f32,
     max_lines: usize,
     max_px: f32,
     min_px: f32,
@@ -105,6 +114,7 @@ pub fn fit(
             && lines
                 .iter()
                 .all(|l| line_width(font, l, px, tracking) <= max_w)
+            && block_height(font, px, lines.len()) <= max_h
         {
             return Layout {
                 lines,
@@ -133,8 +143,6 @@ pub fn draw_centred(dst: &mut [u8], dst_w: u32, dst_h: u32, layout: &Layout, col
     }
 }
 
-/// The same type as `draw_centred` lays down, as one byte of ink per pixel and no colour.
-/// What a caller needs to dilate a halo out of the type before tinting it.
 pub fn coverage(dst_w: u32, dst_h: u32, layout: &Layout) -> Vec<u8> {
     let mut out = vec![0u8; (dst_w * dst_h) as usize];
     let Some(font) = label_font() else {
@@ -180,6 +188,13 @@ pub fn coverage(dst_w: u32, dst_h: u32, layout: &Layout) -> Vec<u8> {
         baseline += line_h;
     }
     out
+}
+
+fn block_height(font: &Font, px: f32, lines: usize) -> f32 {
+    match font.horizontal_line_metrics(px) {
+        Some(vm) => vm.new_line_size * lines as f32,
+        None => 0.0,
+    }
 }
 
 /// `font` is the layout's nominal face, kept for call-site compatibility; the measured width
@@ -352,9 +367,6 @@ fn break_word(font: &Font, word: &str, px: f32, tracking: f32, max_w: f32) -> Ve
     parts
 }
 
-/// Ink laid into a coverage buffer, taking the greater of what is there and what arrives.
-/// Adjacent glyphs only ever touch at their antialiased edges, where a sum would darken the
-/// seam into a visible join.
 #[allow(clippy::too_many_arguments)]
 fn stamp(dst: &mut [u8], dst_w: u32, dst_h: u32, x: i32, y: i32, cov: &[u8], gw: u32, gh: u32) {
     for gy in 0..gh {
@@ -373,9 +385,6 @@ fn stamp(dst: &mut [u8], dst_w: u32, dst_h: u32, x: i32, y: i32, cov: &[u8], gw:
     }
 }
 
-/// Source over, carrying the destination's own alpha, so type lands on a transparent buffer
-/// as ink rather than as ink faded toward black. Over an opaque buffer it collapses to the
-/// plain coverage blend.
 fn blend(px: &mut [u8], a: u32, colour: [u8; 3]) {
     let under = px[3] as u32 * (255 - a) / 255;
     let out = a + under;

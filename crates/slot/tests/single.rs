@@ -54,7 +54,6 @@ fn two_carts_still_show_the_shelf_and_still_eject() {
     assert!(matches!(a2.phase(), Phase::Ejecting { .. }));
 }
 
-/// The one case where the shelf has to appear anyway.
 #[test]
 fn a_single_cart_that_will_not_load_falls_back_to_the_shelf() {
     let d = tmp_root_with_carts(&["Broken"]);

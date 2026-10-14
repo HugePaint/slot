@@ -1,15 +1,13 @@
-//! ALSA through `dlopen`, exactly as the libretro core is loaded. Linking `libasound` would
-//! put a rootfs dependency on the cross build for a library the device already has, and the
-//! PCM entry points needed here are six.
-
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use libloading::Library;
 
 use super::ring::Ring;
+use super::silence::Silence;
 use super::sink::{AudioError, AudioSink};
 use super::Profile;
 
@@ -26,12 +24,8 @@ const CHANNELS: c_uint = 2;
 // The two are coupled: ALSA needs at least two periods of buffer, so a request below
 // `2 * period_frames` is quietly rounded up and asking for less buys nothing.
 
-/// Most specific first. `plug:default` leads because both halves are needed and neither is
-/// optional: `default` is where the card's `asound.conf` lives, and on the H700 that file is
-/// what switches the codec's speaker and line out on — open anything else and the PCM streams
-/// perfectly into outputs that are still muted. The `plug:` wrapper is what makes `default`
-/// reachable at all, since it resolves to a raw `hw:` slave that cannot convert the GBA's
-/// 32768 Hz to the 32000 the codec runs at, and a bare `default` fails on the rate alone.
+const RELEASE_AFTER: Duration = Duration::from_secs(3);
+
 const DEVICES: [&str; 4] = ["plug:default", "default", "plughw:0,0", "hw:0,0"];
 
 type PcmOpen = unsafe extern "C" fn(*mut *mut c_void, *const c_char, c_int, c_int) -> c_int;
@@ -96,22 +90,11 @@ impl Alsa {
                 continue;
             };
             let mut pcm: *mut c_void = std::ptr::null_mut();
-            let err = unsafe {
-                (self.open)(
-                    &mut pcm,
-                    cname.as_ptr(),
-                    SND_PCM_STREAM_PLAYBACK,
-                    // Blocking: the write is what paces the worker, and a nonblocking one
-                    // would need a poll loop to do the same job.
-                    0,
-                )
-            };
+            let err = unsafe { (self.open)(&mut pcm, cname.as_ptr(), SND_PCM_STREAM_PLAYBACK, 0) };
             if err < 0 || pcm.is_null() {
                 last = AudioError::Device(format!("{name}: {}", self.message(err)));
                 continue;
             }
-            // Resampling is asked of ALSA rather than of the frontend: the GBA's 32768 Hz is
-            // not a rate every codec offers, and one conversion is better than two.
             let err = unsafe {
                 (self.set_params)(
                     pcm,
@@ -184,7 +167,7 @@ impl AudioSink for AlsaSink {
         let join = std::thread::Builder::new()
             .name("slot-audio".into())
             .spawn(move || match play(&ring, sample_rate, profile) {
-                Ok(device) => {
+                Ok(mut device) => {
                     let _ = ready_tx.send(Ok(()));
                     device.run(&ring, &flag);
                 }
@@ -214,53 +197,107 @@ impl AudioSink for AlsaSink {
     }
 }
 
-/// The open PCM and the library it came from, both owned by the writing thread.
 struct Playback {
     alsa: Alsa,
-    pcm: *mut c_void,
+    pcm: Option<*mut c_void>,
+    rate: u32,
+    latency_us: u32,
     /// Frames per write, from the profile that opened this PCM.
     period_frames: usize,
+    failing: bool,
 }
 
 fn play(ring: &Arc<Ring>, sample_rate: u32, profile: Profile) -> Result<Playback, AudioError> {
     let alsa = Alsa::load()?;
-    let pcm = alsa.open_pcm(sample_rate, profile.latency_us())?;
+    let pcm = match alsa.open_pcm(sample_rate, profile.latency_us()) {
+        Ok(pcm) => Some(pcm),
+        Err(e) => {
+            eprintln!("slot: audio: {e}, retrying");
+            None
+        }
+    };
     ring.reopen(sample_rate);
     Ok(Playback {
         alsa,
         pcm,
+        rate: sample_rate,
+        latency_us: profile.latency_us(),
         period_frames: profile.period_frames(),
+        failing: pcm.is_none(),
     })
 }
 
 impl Playback {
-    /// A blocking write per period, which is what paces the whole frontend: the emulator
-    /// runs against the ring and the ring drains at exactly the rate the codec plays.
-    fn run(&self, ring: &Ring, stop: &AtomicBool) {
+    /// A blocking write per period while the device is open, which is what paces the emulator.
+    /// Silence (mute included) releases the PCM and sleeps the same period instead, so a held
+    /// SELECT mute does not stall the frame rate on a device that has stopped consuming.
+    fn run(&mut self, ring: &Ring, stop: &AtomicBool) {
         let mut buf = vec![0i16; self.period_frames * CHANNELS as usize];
+        let span = Duration::from_secs_f64(self.period_frames as f64 / self.rate as f64);
+        let mut silence = Silence::new(RELEASE_AFTER);
         while !stop.load(Ordering::Relaxed) {
             ring.fill(&mut buf);
-            let mut written = 0;
-            while written < self.period_frames {
-                let at = written * CHANNELS as usize;
-                let frames = unsafe {
-                    (self.alsa.writei)(
-                        self.pcm,
-                        buf[at..].as_ptr() as *const c_void,
-                        (self.period_frames - written) as u64,
-                    )
-                };
-                if frames < 0 {
-                    // An underrun is recoverable and routine on a device that just came back
-                    // from a doze. Anything else ends the stream.
-                    let err = unsafe { (self.alsa.recover)(self.pcm, frames as c_int, 1) };
-                    if err < 0 {
-                        eprintln!("slot: audio: {}", self.alsa.message(err));
+            let hold = silence.hear(&buf, span);
+            match (self.pcm, hold) {
+                (Some(_), false) => {
+                    self.release();
+                    eprintln!("slot: audio released after silence");
+                }
+                (None, true) => match self.alsa.open_pcm(self.rate, self.latency_us) {
+                    Ok(pcm) => {
+                        eprintln!("slot: audio reopened at {:.1} ms", crate::boot_time::ms());
+                        self.pcm = Some(pcm);
+                        self.failing = false;
+                    }
+                    Err(e) => {
+                        if !self.failing {
+                            eprintln!("slot: audio: {e}, retrying");
+                            self.failing = true;
+                        }
+                    }
+                },
+                _ => {}
+            }
+            match self.pcm {
+                Some(pcm) => {
+                    if !self.write(pcm, &buf) {
                         return;
                     }
-                    continue;
                 }
-                written += frames as usize;
+                None => std::thread::sleep(span),
+            }
+        }
+    }
+
+    fn write(&self, pcm: *mut c_void, buf: &[i16]) -> bool {
+        let mut written = 0;
+        while written < self.period_frames {
+            let at = written * CHANNELS as usize;
+            let frames = unsafe {
+                (self.alsa.writei)(
+                    pcm,
+                    buf[at..].as_ptr() as *const c_void,
+                    (self.period_frames - written) as u64,
+                )
+            };
+            if frames < 0 {
+                let err = unsafe { (self.alsa.recover)(pcm, frames as c_int, 1) };
+                if err < 0 {
+                    eprintln!("slot: audio: {}", self.alsa.message(err));
+                    return false;
+                }
+                continue;
+            }
+            written += frames as usize;
+        }
+        true
+    }
+
+    fn release(&mut self) {
+        if let Some(pcm) = self.pcm.take() {
+            unsafe {
+                (self.alsa.drop)(pcm);
+                (self.alsa.close)(pcm);
             }
         }
     }
@@ -268,11 +305,6 @@ impl Playback {
 
 impl Drop for Playback {
     fn drop(&mut self) {
-        unsafe {
-            // Drop rather than drain: what is still queued is audio for a session that has
-            // already ended, and draining would block the close on playing all of it.
-            (self.alsa.drop)(self.pcm);
-            (self.alsa.close)(self.pcm);
-        }
+        self.release();
     }
 }

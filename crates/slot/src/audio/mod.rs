@@ -3,6 +3,7 @@ mod alsa;
 mod host;
 mod ring;
 mod sfx;
+mod silence;
 mod sink;
 mod stub;
 pub mod volume;
@@ -12,11 +13,10 @@ pub use alsa::AlsaSink;
 pub use host::HostAudio;
 pub use ring::{ring_capacity, Ring};
 pub use sfx::Sfx;
+pub use silence::Silence;
 pub use sink::{AudioError, AudioSink};
 pub use stub::StubSink;
 
-/// The GBA's own rate. slot plays nothing else, so the device is opened for it before there
-/// is a core to ask, and a device that takes it needs no resampling at all.
 pub const GBA_HZ: u32 = 32_768;
 
 /// How hard the audio path trades latency for slack.
@@ -115,8 +115,19 @@ impl Profile {
 /// The sink this build talks to: cpal on a desktop, ALSA on the device. A sink that fails to
 /// open is not a failure to boot either way, since a ring nothing drains still lets the
 /// emulator run.
+pub fn opened_sink() -> Box<dyn AudioSink> {
+    let mut sink = open_sink();
+    if let Err(e) = sink.open(GBA_HZ, Profile::default()) {
+        eprintln!("slot: audio: {e}");
+    }
+    sink
+}
+
 #[cfg(feature = "host")]
 pub fn open_sink() -> Box<dyn AudioSink> {
+    if std::env::var_os("SLOT_SILENT").is_some() {
+        return Box::new(StubSink::draining());
+    }
     Box::new(HostAudio::new())
 }
 

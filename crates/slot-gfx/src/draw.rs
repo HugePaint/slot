@@ -2,22 +2,16 @@ use crate::quad::Quad;
 use crate::shaders::{SPRITE_FRAG, SPRITE_VERT};
 use crate::surface::{GfxError, OUT_H, OUT_W};
 
-/// Handle to a texture the compositor owns. UI code never sees a GL name.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct TexId(usize);
 
 #[cfg(feature = "test-support")]
 impl TexId {
-    /// A handle by index, for callers that need to name a texture without a live context —
-    /// tests and tools. Gated behind `test-support`, which no consumer enables outside its
-    /// own `[dev-dependencies]`, so a forged handle cannot reach the device build and alias
-    /// whatever real texture happens to sit at that index.
     pub const fn from_raw(id: usize) -> Self {
         TexId(id)
     }
 }
 
-/// Chrome geometry, in offscreen pixels with the origin at the top left.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum Draw {
     Rect {
@@ -35,9 +29,6 @@ pub enum Draw {
         tex: TexId,
         alpha: f32,
     },
-    /// `Tex` turned about its own centre by `turn` radians, clockwise on the panel since y
-    /// runs down. For the few faces that tilt: the lid over the core picker and its chip in
-    /// flight. A variant rather than a field on `Tex`, so no existing draw had to change.
     Turned {
         x: f32,
         y: f32,
@@ -47,10 +38,6 @@ pub enum Draw {
         alpha: f32,
         turn: f32,
     },
-    /// Where the game layer goes. It carries no geometry: the pass owns its own rect, since
-    /// the power on squeezes it. A marker rather than a pass of its own before the list,
-    /// because the panel is the front surface of the device and has to be able to come up
-    /// over a cart that is already in the slot.
     Game,
     /// Where the screen glow goes, if the overlay up asks for one: the picture's own edge
     /// carried out past its window, over the bezel. A marker of its own rather than something
@@ -64,8 +51,6 @@ pub enum Draw {
     Shot { tex: TexId },
 }
 
-/// One program for both variants: a rect is a textured quad sampling a white texel, so a
-/// draw list never has to change program mid list.
 pub struct Sprites {
     prog: gl::types::GLuint,
     white: gl::types::GLuint,
@@ -113,9 +98,6 @@ impl Sprites {
         self.push(w, h, rgba, gl::LINEAR)
     }
 
-    /// For a texture drawn at a whole number magnification, where a linear tap lands between
-    /// texels and blurs the pixel grid the source is defined on. The switcher's screenshot is
-    /// the only one: everything else is drawn at its own size or smaller.
     pub fn create_texture_nearest(&mut self, w: u32, h: u32, rgba: &[u8]) -> TexId {
         self.push(w, h, rgba, gl::NEAREST)
     }
@@ -126,9 +108,6 @@ impl Sprites {
         TexId(self.textures.len() - 1)
     }
 
-    /// Replaces a texture's contents in place. The polaroid switcher redraws the same ten
-    /// cards every time it opens, and creating a fresh set each time would grow the pool
-    /// for the life of the session.
     pub fn update_texture(&mut self, id: TexId, w: u32, h: u32, rgba: &[u8]) {
         let Some(tex) = self.textures.get(id.0) else {
             return;
@@ -217,8 +196,6 @@ impl Sprites {
                 // and the glow itself.
                 Draw::Game | Draw::Glow | Draw::Shot { .. } => continue,
             };
-            // Exactly (1, 0) for anything unturned rather than cos and sin of zero, so the
-            // shader's correction term is zero by construction and not by rounding.
             let (cos, sin) = if turn == 0.0 {
                 (1.0, 0.0)
             } else {

@@ -1,12 +1,9 @@
-//! Anything that has to reach the shelf carries a second cart: one cart on the card is a
-//! dedicated device and boots past the shelf entirely.
-
 mod common;
 
 use common::{boot, tmp_root_with_carts};
 use slot::app::{App, Phase};
-use slot_input::Action;
-use slot_store::{read_slot_state, write_slot_state, Mode, SlotState};
+use slot_input::{Action, Btn};
+use slot_store::{read_slot_state, write_slot_state, Mode, Platform, SlotState};
 
 fn seated(cart: &str) -> SlotState {
     SlotState {
@@ -43,7 +40,6 @@ fn boot_with_a_cart_that_no_longer_exists_falls_back_to_the_shelf() {
     assert!(matches!(a.phase(), Phase::Shelf));
 }
 
-/// Ejecting a resumed cart has to land on it, not on the first cart in the library.
 #[test]
 fn boot_leaves_the_shelf_sitting_on_the_resumed_cart() {
     let d = tmp_root_with_carts(&["Advance Wars", "Emerald", "Fire Emblem"]);
@@ -65,7 +61,6 @@ fn boot_leaves_the_shelf_sitting_on_the_resumed_cart() {
     assert_eq!(cart, "Emerald");
 }
 
-/// Without this the resume on the next boot has nothing to read.
 #[test]
 fn a_seated_cart_is_recorded_so_the_next_boot_can_resume_it() {
     let d = tmp_root_with_carts(&["Emerald", "Fusion"]);
@@ -84,7 +79,30 @@ fn a_seated_cart_is_recorded_so_the_next_boot_can_resume_it() {
     assert_eq!(read_slot_state(d.path()).cart, Some("Emerald".into()));
 }
 
-/// A refusal must not leave the slot claiming a cart that never went in.
+#[test]
+fn a_cart_that_is_gone_takes_its_shelf_out_of_the_slot_with_it() {
+    let d = tmp_root_with_carts(&["Emerald", "Fusion"]);
+    write_slot_state(
+        d.path(),
+        &SlotState {
+            cart: Some("Deleted".into()),
+            cart_platform: Some(Platform::Gbc),
+            clock_set: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut a = App::boot(d.path());
+    a.apply(Action::MuteToggle);
+    a.flush_state();
+    let s = read_slot_state(d.path());
+    assert_eq!(s.cart, None);
+    assert_eq!(
+        s.cart_platform, None,
+        "the card names a shelf beside a line that names no cart"
+    );
+}
+
 #[test]
 fn a_cart_that_fails_to_load_leaves_the_slot_empty() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -98,7 +116,6 @@ fn a_cart_that_fails_to_load_leaves_the_slot_empty() {
     assert_eq!(read_slot_state(d.path()).cart, None);
 }
 
-/// The levels are the rest of the file. Recording a cart must not reset them.
 #[test]
 fn seating_a_cart_preserves_the_levels_already_in_the_file() {
     let d = tmp_root_with_carts(&["Emerald", "Fusion"]);
@@ -112,11 +129,9 @@ fn seating_a_cart_preserves_the_levels_already_in_the_file() {
             muted: false,
             clock_set: true,
             utc_offset_min: 0,
-            // Written down rather than defaulted: these two are the literals that spell the
-            // whole state out, so a field added without them is a build error — which is how
-            // this one was found.
             mode: Mode::Dark,
             favorites: std::collections::BTreeSet::new(),
+            ..SlotState::default()
         },
     )
     .unwrap();
@@ -130,13 +145,6 @@ fn seating_a_cart_preserves_the_levels_already_in_the_file() {
     assert_eq!((s.brightness, s.blue_light, s.volume), (2, 7, 35));
 }
 
-/// Spec section 3: a cart already in the slot shows no shelf, "not even one frame of it".
-/// Task 16 only asserted the phase, so a resume that slid the cart in past a receding shelf
-/// passed it. What the user sees is the game selector flashing up on every boot.
-///
-/// Counted against a chosen insert rather than against a fixed number: with no compositor
-/// there are no uploaded faces, so carts and chrome are both plain rects and an absolute
-/// count would mean nothing.
 #[test]
 fn a_resume_draws_no_shelf_but_a_chosen_insert_does() {
     let seated = || {
@@ -177,7 +185,6 @@ fn a_resume_draws_no_shelf_but_a_chosen_insert_does() {
         "a resume drew {r} and a chosen insert {p}: the shelf is on screen for both"
     );
 
-    // And it stays absent for the whole insert, not just the first frame.
     let (mut resume, _d3) = seated();
     for frame in 0..90 {
         assert!(
@@ -194,25 +201,178 @@ fn draw_count(a: &App) -> usize {
     out.len()
 }
 
-/// `App::boot` is the only caller of `crate::root::migrate`. Every other migration test
-/// calls `slot_store::migrate_states` directly, so none of them would notice if boot ever
-/// stopped calling it — that call would just quietly stop moving anyone's states.
 #[test]
-fn boot_migrates_a_pre_namespacing_state_shelf() {
-    let d = tmp_root_with_carts(&["Emerald"]);
-    let old = d.path().join("States/Emerald");
-    std::fs::create_dir_all(&old).unwrap();
-    std::fs::write(old.join("resume.state"), b"pre-namespacing").unwrap();
+fn a_loose_card_shows_an_empty_shelf_and_nothing_on_it_is_moved() {
+    let d = tempfile::tempdir().unwrap();
+    for sub in ["Games", "Saves", "Labels", "States"] {
+        std::fs::create_dir_all(d.path().join(sub)).unwrap();
+    }
+    std::fs::write(d.path().join("Games/Emerald.gba"), vec![0u8; 0x100]).unwrap();
+    std::fs::write(d.path().join("Saves/Emerald.sav"), vec![7u8; 0x10000]).unwrap();
+    std::fs::write(d.path().join("Labels/Emerald.png"), b"png").unwrap();
+    let old_states = d.path().join("States/mgba/Emerald");
+    std::fs::create_dir_all(&old_states).unwrap();
+    std::fs::write(old_states.join("resume.state"), b"resume").unwrap();
 
-    App::boot(d.path());
+    let a = App::boot(d.path());
 
-    assert!(
-        d.path().join("States/mgba/Emerald/resume.state").exists(),
-        "boot did not carry the pre-namespacing state shelf under States/mgba/"
+    assert_eq!(
+        a.carts().count(),
+        0,
+        "a loose rom reached the shelf, so something is still reading outside Games/<platform>/"
+    );
+    assert_eq!(
+        std::fs::read(d.path().join("Games/Emerald.gba"))
+            .unwrap()
+            .len(),
+        0x100,
+        "the loose rom was moved or disturbed"
+    );
+    assert_eq!(
+        std::fs::read(d.path().join("Saves/Emerald.sav"))
+            .unwrap()
+            .len(),
+        0x10000,
+        "the loose battery save was moved or disturbed"
+    );
+    assert_eq!(
+        std::fs::read(d.path().join("Labels/Emerald.png")).unwrap(),
+        b"png",
+        "the loose label was moved"
+    );
+    assert_eq!(
+        std::fs::read(old_states.join("resume.state")).unwrap(),
+        b"resume",
+        "a pre-namespacing state directory was moved"
     );
 }
 
-/// And it is already home rather than travelling there.
+#[test]
+fn boot_creates_the_folders_a_person_has_to_file_into() {
+    let d = tempfile::tempdir().unwrap();
+
+    App::boot(d.path());
+
+    for name in slot::root::DIRS {
+        assert!(
+            d.path().join(name).is_dir(),
+            "{name} is missing, so nothing on the card says where its files go"
+        );
+    }
+}
+
+fn two_tetrises() -> tempfile::TempDir {
+    let d = tmp_root_with_carts(&["Tetris", "Emerald"]);
+    common::write_gb_cart(&d, "Tetris", "TETRIS");
+    d
+}
+
+fn resumed(d: &tempfile::TempDir, platform: Option<Platform>) -> App {
+    write_slot_state(
+        d.path(),
+        &SlotState {
+            cart: Some("Tetris".into()),
+            cart_platform: platform,
+            clock_set: true,
+            utc_offset_min: 0,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    App::boot(d.path())
+}
+
+#[test]
+fn the_platform_on_the_card_decides_which_tetris_comes_back() {
+    let d = two_tetrises();
+    for platform in [Platform::Gb, Platform::Gba] {
+        let a = resumed(&d, Some(platform));
+        let cart = a.seated_cart().expect("nothing seated");
+        assert_eq!(
+            cart.platform, platform,
+            "the card named {platform:?} and a {:?} cart came back",
+            cart.platform
+        );
+        assert!(
+            cart.rom.ends_with(format!(
+                "{}/Tetris.{}",
+                platform.dir_name(),
+                platform.extensions()[0]
+            )),
+            "the rom the slot is holding is {:?}",
+            cart.rom
+        );
+    }
+}
+
+#[test]
+fn a_card_that_never_said_resumes_the_gba_cart() {
+    let d = two_tetrises();
+    let a = resumed(&d, None);
+    assert_eq!(
+        a.seated_cart().expect("nothing seated").platform,
+        Platform::Gba
+    );
+}
+
+#[test]
+fn a_named_shelf_that_no_longer_has_the_cart_is_an_empty_slot() {
+    let d = two_tetrises();
+    let a = resumed(&d, Some(Platform::Gbc));
+    assert!(
+        matches!(a.phase(), Phase::Shelf),
+        "a Colour Tetris that is not on the card seated something: {:?}",
+        a.phase()
+    );
+}
+
+#[test]
+fn seating_a_cart_records_the_shelf_it_came_off() {
+    let d = two_tetrises();
+    let mut a = boot(d.path());
+    a.apply(Action::GbaDown(Btn::R1));
+    assert_eq!(
+        a.selected_stem(),
+        Some("Tetris"),
+        "the shoulder did not ring to the Game Boy shelf"
+    );
+    a.apply(Action::Insert);
+    a.on_core_ready();
+    for _ in 0..120 {
+        a.update(1.0 / 60.0);
+    }
+    assert!(matches!(a.phase(), Phase::Playing { .. }));
+    let s = read_slot_state(d.path());
+    assert_eq!(
+        (s.cart.as_deref(), s.cart_platform),
+        (Some("Tetris"), Some(Platform::Gb)),
+        "the card does not say which Tetris is in the slot"
+    );
+
+    let again = App::boot(d.path());
+    assert_eq!(
+        again.seated_cart().expect("nothing seated").platform,
+        Platform::Gb
+    );
+}
+
+#[test]
+fn an_eject_forgets_the_platform_with_the_cart() {
+    let d = two_tetrises();
+    let mut a = resumed(&d, Some(Platform::Gb));
+    a.on_core_ready();
+    for _ in 0..120 {
+        a.update(1.0 / 60.0);
+    }
+    a.apply(Action::Eject);
+    for _ in 0..120 {
+        a.update(1.0 / 60.0);
+    }
+    assert!(matches!(a.phase(), Phase::Shelf));
+    let s = read_slot_state(d.path());
+    assert_eq!((s.cart, s.cart_platform), (None, None));
+}
+
 #[test]
 fn a_resumed_cart_starts_seated() {
     let d = common::tmp_root_with_carts(&["Emerald", "Fusion"]);

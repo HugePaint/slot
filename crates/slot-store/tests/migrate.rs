@@ -51,7 +51,7 @@ fn a_pre_migration_card_moves_under_mgba() {
     );
     // And the ring can see them, which is the only reason to move them at all.
     assert_eq!(
-        StateRing::new(d.path(), Core::Mgba, "Emerald")
+        StateRing::legacy(d.path(), Core::Mgba, "Emerald")
             .list()
             .unwrap()
             .len(),

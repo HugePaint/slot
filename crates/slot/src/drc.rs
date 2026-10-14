@@ -5,8 +5,6 @@ use crate::audio::Profile;
 /// buffer would climb with nothing able to pull it back.
 const MAX_CORRECTION: f64 = 0.005;
 
-/// How far the device buffer is from where it should sit, as a resampling ratio. Above 1.0
-/// stretches the stream to cover a starved device, below 1.0 compresses it to drain a full one.
 pub fn drc_ratio(queued_frames: usize, target_frames: usize) -> f64 {
     if target_frames == 0 {
         return 1.0;
@@ -16,12 +14,10 @@ pub fn drc_ratio(queued_frames: usize, target_frames: usize) -> f64 {
     ratio.clamp(1.0 - MAX_CORRECTION, 1.0 + MAX_CORRECTION)
 }
 
-/// Where the ring should sit, in frames, for the chosen profile.
+/// Where the ring is primed, in frames: the `Stable` profile (`capacity / 2`).
 ///
-/// This is the emulator's lead over the speaker, and therefore the offset a rhythm game judges
-/// against: with `stable` the DRC parks four video frames of audio (66.7 ms) ahead, which is a
-/// comfortable margin against a slow card but a long way from what the player hears.
-/// `Profile::target` owns the numbers; this is only the seam that lets the loop ask for them.
-pub fn drc_target(capacity_frames: usize, profile: Profile) -> usize {
-    profile.target(capacity_frames)
+/// A running session asks `Profile::target` instead, so Balanced and Strict park the ring
+/// shallower than this without the ring itself having to know which profile opened the device.
+pub fn drc_target(capacity_frames: usize) -> usize {
+    Profile::Stable.target(capacity_frames)
 }

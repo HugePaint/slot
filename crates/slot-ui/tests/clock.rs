@@ -11,7 +11,6 @@ fn recent_states_read_relative_and_old_ones_read_absolute() {
         Polaroids::relative_time("2026-08-09_03-00-00", now),
         "11 hr ago"
     );
-    // Past twelve hours the relative form stops being useful and starts being vague.
     assert_eq!(
         Polaroids::relative_time("2026-08-08_20-00-00", now),
         "2026-08-08 20:00"

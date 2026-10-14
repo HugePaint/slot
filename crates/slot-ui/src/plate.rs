@@ -1,34 +1,15 @@
-use crate::draw::{Draw, TexId};
+use crate::draw::{Draw, TexId, OUT_W};
 use crate::text;
 
-/// A hint is a key cap and what that key does, sized to what it says: four of them share the
-/// bottom plate with the dots, and a fixed width wide enough for the longest would leave the
-/// short ones swimming.
 pub const HINT_H: u32 = 24;
-/// The smallest a cap gets, and the size of every single letter one, so B and X sit
-/// identically on theirs.
 pub const CAP: u32 = 20;
-/// Blank either side of a key that needs more room than the square.
 const CAP_PAD: u32 = 4;
-/// A cap is never wider than this. Only the layout uses it; nothing names a key this long.
 const CAP_MAX_W: f32 = 64.0;
-/// Tight. Any more and the cap and its word read as two separate things rather than one
-/// label.
-/// Between one hint and the next. Lives here rather than with either screen, so the shelf
-/// and the switcher cannot drift apart.
 pub const HINT_GAP: f32 = 14.0;
 
-/// Between a key cap and the word it belongs to. Small, but it has to stay clearly smaller
-/// than the gap between one hint and the next, or the row reads as an alternating run of
-/// caps and words rather than as pairs. `grouping_reads_as_pairs` holds that ratio.
 pub const CAP_GAP: u32 = 5;
-/// Blank column past the type, so a label that filled its band cannot touch the next hint.
 const EDGE: u32 = 2;
-/// The transparent strip every hint face carries after its label, so type never touches the
-/// face's last column. Whoever lines a hint up against something should not count it.
 pub const HINT_EDGE: u32 = EDGE;
-/// The longest a label may rasterise to before the fitter shrinks it. The undo is the only
-/// one that comes from outside this file.
 const LABEL_MAX_W: f32 = 140.0;
 
 pub const TITLE_W: u32 = 360;
@@ -97,15 +78,12 @@ pub struct UndoFace {
     pub h: u32,
 }
 
-/// A key cap and what it does. Every screen names its own buttons; the binary rasterises what
-/// it is told and hands back a texture.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Hint {
     pub key: &'static str,
     pub label: String,
 }
 
-/// A legend as hints, in the order it will be drawn.
 pub fn hint_row(legend: &[(&'static str, &'static str)]) -> Vec<Hint> {
     legend
         .iter()
@@ -116,9 +94,6 @@ pub fn hint_row(legend: &[(&'static str, &'static str)]) -> Vec<Hint> {
         .collect()
 }
 
-/// How wide the cap has to be for the key on it. Square for a single letter; wider for one
-/// that names two buttons, since shrinking `L / R` into the square would make the shelf's only
-/// legend the smallest type on screen.
 pub fn cap_width(key: &str) -> u32 {
     let Some(font) = text::label_font() else {
         return CAP;
@@ -132,14 +107,10 @@ pub fn cap_width(key: &str) -> u32 {
     CAP.max(ink.ceil() as u32 + 2 * CAP_PAD)
 }
 
-/// What `hint_face` will rasterise to. The screens lay their legends out from these, so the
-/// two have to agree or every hint after the first sits beside someone else's type.
 pub fn hint_width(key: &str, label: &str) -> u32 {
     cap_width(key) + CAP_GAP + band_width(label) + EDGE
 }
 
-/// Transparent apart from the cap and the type: both plates are translucent over a
-/// screenshot, and a filled face would be a solid block sitting on one.
 pub fn hint_face(key: &str, label: &str) -> UndoFace {
     let w = hint_width(key, label);
     let mut rgba = vec![0u8; (w * HINT_H * 4) as usize];
@@ -166,8 +137,6 @@ pub fn hint_face(key: &str, label: &str) -> UndoFace {
     UndoFace { rgba, w, h: HINT_H }
 }
 
-/// The same type as a hint's label, with no key cap in front of it. What the shelf prints on
-/// the case: the wordmark and the time, in the font the buttons are labelled in.
 pub fn word_width(text: &str) -> u32 {
     band_width_at(text, PCT_PX, PCT_MIN_PX)
 }
@@ -207,8 +176,6 @@ pub fn clock_face(text: &str) -> UndoFace {
     }
 }
 
-/// A hint's slot is held whether or not its face arrived, for the same reason a cart with no
-/// face still holds its place on the shelf: a missing affordance is worse than a blank one.
 pub fn hint_quad(x: f32, y: f32, w: f32, face: Option<TexId>) -> Draw {
     let h = HINT_H as f32;
     match face {
@@ -230,8 +197,23 @@ pub fn hint_quad(x: f32, y: f32, w: f32, face: Option<TexId>) -> Draw {
     }
 }
 
-/// How wide the type alone comes out, which is what the hint is sized around. A label the
-/// fitter had to break lands at `LABEL_MAX_W`, since that is the width it was broken to.
+pub const LEGEND_GAP: f32 = 36.0;
+
+pub fn centred_hints(hints: &[(TexId, u32)], gap: f32) -> Vec<(TexId, u32, f32)> {
+    let seen = |w: u32| w.saturating_sub(HINT_EDGE) as f32;
+    let total = hints.iter().map(|&(_, w)| seen(w)).sum::<f32>()
+        + gap * hints.len().saturating_sub(1) as f32;
+    let mut x = ((OUT_W as f32 - total) / 2.0).round();
+    hints
+        .iter()
+        .map(|&(tex, w)| {
+            let at = x.round();
+            x += seen(w) + gap;
+            (tex, w, at)
+        })
+        .collect()
+}
+
 fn band_width(label: &str) -> u32 {
     band_width_at(label, LABEL_PX, LABEL_MIN_PX)
 }
@@ -253,7 +235,6 @@ fn band_width_at(label: &str, px: f32, min_px: f32) -> u32 {
     (ink.ceil() as u32).clamp(1, LABEL_MAX_W as u32)
 }
 
-/// One line of type for the top plate, naming the entry under the eye.
 pub fn title_face(text: &str) -> UndoFace {
     let mut rgba = vec![0u8; (TITLE_W * TITLE_H * 4) as usize];
     if let Some(font) = text::label_font() {
@@ -324,12 +305,8 @@ pub(crate) fn blit(dst: &mut [u8], dst_w: u32, src: &[u8], src_w: u32, src_h: u3
     }
 }
 
-/// Between the two arrow caps. Tighter than `CAP_GAP`, so the pair reads as one control and
-/// its word as belonging to both.
 pub const ARROW_GAP: u32 = 3;
 
-/// Font Awesome's carets, as the bundled symbols font carries them. `label.ttf` has no arrows,
-/// and a glyph it lacks would rasterise to a blank key.
 const LEFT_CARET: char = '\u{f0d9}';
 const RIGHT_CARET: char = '\u{f0da}';
 
@@ -337,7 +314,6 @@ pub fn arrows_hint_width(label: &str) -> u32 {
     2 * CAP + ARROW_GAP + CAP_GAP + band_width(label) + EDGE
 }
 
-/// Left and right as the two keys they are — a cap each — then the one word they share.
 pub fn arrows_hint_face(label: &str) -> UndoFace {
     let w = arrows_hint_width(label);
     let mut rgba = vec![0u8; (w * HINT_H * 4) as usize];
@@ -370,7 +346,6 @@ pub fn arrows_hint_face(label: &str) -> UndoFace {
     UndoFace { rgba, w, h: HINT_H }
 }
 
-/// A square cap with one symbol glyph centred on it, in the same inks as a lettered cap.
 fn glyph_cap(glyph: char) -> Vec<u8> {
     let mut cap = Vec::with_capacity((CAP * CAP * 4) as usize);
     for _ in 0..CAP * CAP {

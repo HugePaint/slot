@@ -13,7 +13,6 @@ use std::num::NonZeroU32;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
-/// Two times the 720x480 output, the size the device panel maps to on a desktop.
 const DEFAULT_W: u32 = 1440;
 const DEFAULT_H: u32 = 960;
 
@@ -28,12 +27,16 @@ fn err<E: std::fmt::Display>(e: E) -> GfxError {
     GfxError::Context(e.to_string())
 }
 
-/// `SLOT_BARE=1` drops the title bar and the border, leaving nothing on screen but the
-/// panel. For screenshots and capture, where a macOS title bar is the only thing between
-/// a window and a picture of the device.
-///
-/// Off by default, and deliberately not the only way to run: an undecorated window
-/// cannot be dragged, resized or closed with the mouse, so it is quit with Cmd+Q.
+fn size() -> (u32, u32) {
+    std::env::var("SLOT_WINDOW")
+        .ok()
+        .and_then(|v| {
+            let (w, h) = v.split_once('x')?;
+            Some((w.parse().ok()?, h.parse().ok()?))
+        })
+        .unwrap_or((DEFAULT_W, DEFAULT_H))
+}
+
 fn bare() -> bool {
     std::env::var_os("SLOT_BARE").is_some_and(|v| v != "0")
 }
@@ -42,7 +45,7 @@ impl HostSurface {
     pub fn new(events: &ActiveEventLoop) -> Result<Self, GfxError> {
         let mut attrs = Window::default_attributes()
             .with_title("slot.")
-            .with_inner_size(winit::dpi::PhysicalSize::new(DEFAULT_W, DEFAULT_H));
+            .with_inner_size(winit::dpi::PhysicalSize::<u32>::from(size()));
         if bare() {
             attrs = attrs.with_decorations(false);
         }
@@ -67,8 +70,6 @@ impl HostSurface {
             unsafe { display.create_window_surface(&config, &surface_attrs) }.map_err(err)?;
         let context = context.make_current(&gl_surface).map_err(err)?;
 
-        // Present is locked to the panel; the 0.456% GBA-to-panel drift is absorbed by
-        // audio rate control, never by dropping vsync.
         let _ = gl_surface.set_swap_interval(&context, SwapInterval::Wait(NonZeroU32::MIN));
 
         Ok(HostSurface {
@@ -102,7 +103,6 @@ fn pick_config(configs: Box<dyn Iterator<Item = Config> + '_>) -> Config {
             best = Some(c);
         }
     }
-    // The iterator is non empty whenever `build` succeeds, so this cannot be reached.
     best.unwrap_or_else(|| unreachable!("glutin yielded no configs"))
 }
 

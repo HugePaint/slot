@@ -11,7 +11,6 @@ use slot_store::{write_slot_state, SlotState};
 use slot_ui::Draw;
 
 const STATE_LEN: usize = 400_000;
-/// About 3% of the state, which is what a frame of a real game touches.
 const CHURN: usize = 12_000;
 
 fn noise(seed: u32, len: usize) -> Vec<u8> {
@@ -24,15 +23,11 @@ fn noise(seed: u32, len: usize) -> Vec<u8> {
         .collect()
 }
 
-/// The memory that did not move this frame. Pseudorandom rather than flat, so the ring is
-/// measured on what its deltas cancel rather than on a fixture lz4 would have flattened
-/// whatever it was handed.
 fn stale() -> &'static [u8] {
     static BASE: OnceLock<Vec<u8>> = OnceLock::new();
     BASE.get_or_init(|| noise(0x5eed, STATE_LEN))
 }
 
-/// Churn is one moving window plus a few registers, which is how a frame's writes cluster.
 fn synthetic_state(i: u32) -> Vec<u8> {
     let mut s = stale().to_vec();
     let at = (i as usize * 997) % (STATE_LEN - CHURN);
@@ -92,8 +87,6 @@ fn eviction_leaves_what_it_kept_intact_and_then_bottoms_out() {
     assert_eq!(r.depth(), 0);
 }
 
-/// Releasing L2 resumes play from wherever the rewind landed, so the next snapshot has to
-/// chain onto that state rather than onto the one the ring last saw pushed.
 #[test]
 fn play_resuming_after_a_rewind_chains_onto_the_state_it_landed_on() {
     let mut r = Rewind::new(4 * 1024 * 1024);
@@ -111,8 +104,6 @@ fn play_resuming_after_a_rewind_chains_onto_the_state_it_landed_on() {
     assert_eq!(r.pop().unwrap(), states[13]);
 }
 
-/// The bar reads the byte budget, since nothing else bounds the history: how many states
-/// fit is whatever the deltas happened to compress to.
 #[test]
 fn fill_reads_full_on_a_full_ring_and_empty_once_it_is_spent() {
     let mut r = Rewind::new(1024 * 1024);
@@ -125,8 +116,6 @@ fn fill_reads_full_on_a_full_ring_and_empty_once_it_is_spent() {
     assert_eq!(r.fill(), 0, "a spent ring still reads as holding history");
 }
 
-/// The bar is held open by L2 rather than by a timer, so it has to still be there long
-/// after the 1500 ms a level bar gets.
 #[test]
 fn the_rewind_bar_is_up_while_l2_is_held_and_gone_once_it_is_let_go() {
     let d = common::tmp_root_with_carts(&["Emerald"]);
@@ -149,6 +138,12 @@ fn the_rewind_bar_is_up_while_l2_is_held_and_gone_once_it_is_let_go() {
         step(&mut s, &mut now, None);
         std::thread::sleep(Duration::from_millis(1));
     }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !s.game_visible() {
+        assert!(Instant::now() < deadline, "the game layer never came up");
+        step(&mut s, &mut now, None);
+        std::thread::sleep(Duration::from_millis(1));
+    }
 
     step(&mut s, &mut now, Some(RawEvent::Down(Btn::L2)));
     for _ in 0..200 {
@@ -162,12 +157,6 @@ fn the_rewind_bar_is_up_while_l2_is_held_and_gone_once_it_is_let_go() {
     assert!(drawn(&s).is_empty(), "the bar outlived the hold");
 }
 
-/// libretro.h: rewinding is one of the time manipulation features a netpacket session
-/// forbids, because it desynchronises the other device with no way back to agreement. Proven
-/// here through `sync_speed`/`sync_rewind_hud`'s shared `actually_rewinding` — the same gate
-/// `emu.set_rewinding` acts on — rather than only through the `App`-level predicate, so a
-/// regression that forgot to wire the engine itself (and only left `App::may_rewind` correct)
-/// would still fail this.
 #[test]
 fn a_live_link_session_refuses_to_actually_rewind() {
     let d = common::tmp_root_with_carts(&["Emerald"]);
@@ -190,6 +179,12 @@ fn a_live_link_session_refuses_to_actually_rewind() {
         step(&mut s, &mut now, None);
         std::thread::sleep(Duration::from_millis(1));
     }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !s.game_visible() {
+        assert!(Instant::now() < deadline, "the game layer never came up");
+        step(&mut s, &mut now, None);
+        std::thread::sleep(Duration::from_millis(1));
+    }
     s.app_mut().begin_link(0);
 
     step(&mut s, &mut now, Some(RawEvent::Down(Btn::L2)));
@@ -209,10 +204,10 @@ fn step(s: &mut Session, now: &mut Millis, ev: Option<RawEvent>) {
     s.update(1.0 / 60.0);
 }
 
-/// Nothing but the HUD draws over a playing game, so the list is the bar.
 fn drawn(s: &Session) -> Vec<Draw> {
     let mut out = Vec::new();
     s.app().draw(&mut out);
+    out.retain(|d| !matches!(d, Draw::Game));
     out
 }
 
@@ -231,8 +226,6 @@ fn a_state_that_changed_size_drops_the_history_rather_than_corrupting_it() {
     );
 }
 
-/// The compressor moved off the emu thread. Whatever else that changed, it must not have
-/// changed what comes back out.
 #[test]
 fn the_thread_reconstructs_states_exactly_in_reverse() {
     let r = RewindThread::spawn(4 * 1024 * 1024);
@@ -245,17 +238,12 @@ fn the_thread_reconstructs_states_exactly_in_reverse() {
     }
 }
 
-/// The ordering guarantee the design leans on: a pop issued straight after a push is
-/// served after it, with no wait inserted by the caller. If the channel ever stopped being
-/// FIFO, a rewind would start from history that was missing its newest frames and this is
-/// the test that would say so.
 #[test]
 fn a_pop_sees_every_push_queued_before_it() {
     let r = RewindThread::spawn(4 * 1024 * 1024);
     for i in 0..40u32 {
         r.push(synthetic_state(i));
     }
-    // No sleep on purpose. The pop has to be the thing that waits.
     assert_eq!(
         r.pop().unwrap(),
         synthetic_state(39),
@@ -264,7 +252,6 @@ fn a_pop_sees_every_push_queued_before_it() {
     assert_eq!(r.pop().unwrap(), synthetic_state(38));
 }
 
-/// An empty ring has nothing to hand back rather than something wrong.
 #[test]
 fn the_thread_runs_dry_without_lying_about_it() {
     let r = RewindThread::spawn(1024 * 1024);
@@ -274,16 +261,12 @@ fn the_thread_runs_dry_without_lying_about_it() {
     assert!(r.pop().is_none(), "a spent ring kept handing states back");
 }
 
-/// `fill` is read off an atomic rather than round tripped, so it is worth proving it is
-/// actually published and not left at zero.
 #[test]
 fn the_thread_publishes_its_fill() {
     let r = RewindThread::spawn(256 * 1024);
     for i in 0..400u32 {
         r.push(synthetic_state(i));
     }
-    // A pop round trips, so by the time it returns every push above has been applied and
-    // the atomic behind it has been stored.
     let _ = r.pop();
     assert!(r.fill() > 50, "a loaded ring published fill {}", r.fill());
 }

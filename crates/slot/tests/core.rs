@@ -19,8 +19,6 @@ fn rom(name: &str) -> PathBuf {
     p
 }
 
-/// The two cores are indistinguishable through the trait except by what they serialize:
-/// mGBA writes out a whole machine, the mock writes a frame counter.
 fn is_mgba(core: &mut dyn RetroCore, rom: &Path) -> bool {
     core.load(rom).expect("core refused the test rom");
     core.run_frame(ButtonMask::default());
@@ -34,7 +32,7 @@ fn the_vendored_core_is_preferred_over_the_mock() {
         return;
     };
     let d = common::tmp_root_with_real_carts(&[]);
-    let mut core = open_core_for(d.path(), Core::Mgba, &[dylib]);
+    let mut core = open_core_for(d.path(), Core::Mgba, "auto", false, &[dylib]);
     assert!(
         is_mgba(core.as_mut(), &rom("preferred.gba")),
         "the mock ran with a vendored core sitting right there"
@@ -44,12 +42,16 @@ fn the_vendored_core_is_preferred_over_the_mock() {
 #[test]
 fn a_missing_core_falls_back_to_the_mock_rather_than_failing() {
     let d = common::tmp_root_with_real_carts(&[]);
-    let mut core = open_core_for(d.path(), Core::Mgba, &[PathBuf::from("no/such/core.dylib")]);
+    let mut core = open_core_for(
+        d.path(),
+        Core::Mgba,
+        "auto",
+        false,
+        &[PathBuf::from("no/such/core.dylib")],
+    );
     assert!(!is_mgba(core.as_mut(), &rom("missing.gba")));
 }
 
-/// A rom the core will not take has to reach the app as `Failed`. Anything else leaves the
-/// insert animation waiting on a core that is never coming.
 #[test]
 fn a_rom_the_real_core_refuses_reports_failed() {
     let _g = core_lock();
@@ -58,8 +60,8 @@ fn a_rom_the_real_core_refuses_reports_failed() {
     };
     let d = common::tmp_root_with_carts(&["Broken"]);
     let emu = EmuHandle::spawn(
-        open_core_for(d.path(), Core::Mgba, &[dylib]),
-        d.path().join("Games/Broken.gba"),
+        open_core_for(d.path(), Core::Mgba, "auto", false, &[dylib]),
+        d.path().join("Games/GBA/Broken.gba"),
         StubSink::new().ring(),
         None,
         None,
@@ -73,8 +75,6 @@ fn a_rom_the_real_core_refuses_reports_failed() {
     assert_eq!(emu.state(), CoreState::Failed);
 }
 
-/// And the refusal has to reach the slot. The mock takes anything, so this is the one path
-/// that only exists once the real core is the default.
 #[test]
 fn a_cart_the_real_core_refuses_comes_back_out_of_the_slot() {
     let _g = core_lock();

@@ -3,8 +3,8 @@ use slot_gfx::{blit_rect, blit_rect_fit, fit_rect, fit_scale};
 #[test]
 fn integer_scale_never_fractional() {
     assert_eq!(fit_scale(1440, 960), 2);
-    assert_eq!(fit_scale(1500, 1000), 2); // rounds down, never 2.08
-    assert_eq!(fit_scale(700, 400), 1); // clamps to 1 below native
+    assert_eq!(fit_scale(1500, 1000), 2);
+    assert_eq!(fit_scale(700, 400), 1);
     assert_eq!(fit_scale(2160, 1440), 3);
 }
 
@@ -39,7 +39,7 @@ fn a_panel_smaller_than_the_composite_fits_rather_than_crops() {
 
 #[test]
 fn the_device_panel_takes_the_fit_and_a_desktop_window_does_not() {
-    assert_eq!(blit_rect((640, 480), 0.0), blit_rect_fit((640, 480), 0.0));
+    assert_eq!(blit_rect((600, 480), 0.0), blit_rect_fit((600, 480), 0.0));
     assert_eq!(blit_rect((1500, 1000), 0.0), fit_rect(1500, 1000));
 }
 

@@ -1,7 +1,5 @@
-use slot_ui::{icon_box, icon_face, Icon, HUD_ICON_PX};
+use slot_ui::{badge_face, icon_box, icon_face, Badge, Icon, HUD_ICON_PX, LINK_HOST_INK};
 
-/// Faces are uploaded in `ALL` order and looked up by `index`, which is the discriminant.
-/// Reordering `ALL` alone would silently put the wrong glyph on the HUD.
 #[test]
 fn icons_are_indexed_in_declaration_order() {
     for (i, icon) in Icon::ALL.iter().enumerate() {
@@ -27,9 +25,6 @@ fn every_icon_rasterises_to_something_visible() {
     }
 }
 
-/// A missing glyph renders as tofu or nothing, and both look like a layout bug rather than
-/// a font problem. This is the test that catches picking a codepoint the font lacks: every
-/// pair, because two glyphs the font is missing come back as the same box.
 #[test]
 fn icons_are_distinguishable_from_each_other() {
     let faces: Vec<_> = Icon::ALL
@@ -43,8 +38,6 @@ fn icons_are_distinguishable_from_each_other() {
     }
 }
 
-/// The whole reason for the Mono variant: a HUD row must not reflow as the glyph under it
-/// changes.
 #[test]
 fn all_icons_share_one_box() {
     let first = icon_face(Icon::Volume, 18.0, [255, 255, 255]);
@@ -60,13 +53,10 @@ fn all_icons_share_one_box() {
     }
 }
 
-/// The raster is cached and the tint is not, so a second colour must not come back wearing
-/// the first one's.
 #[test]
 fn the_icon_is_tinted_with_the_colour_asked_for() {
     icon_face(Icon::Volume, 18.0, [255, 255, 255]);
     let f = icon_face(Icon::Volume, 18.0, [200, 30, 10]);
-    // Halo edges blend, so only fully covered pixels are exactly one colour or the other.
     let opaque: Vec<_> = f.rgba.chunks(4).filter(|p| p[3] == 255).collect();
     assert!(
         opaque.iter().any(|p| p[..3] == [200, 30, 10]),
@@ -97,8 +87,6 @@ fn a_bigger_size_gives_a_bigger_face() {
     );
 }
 
-/// The fast forward badge has no plate under it, so the icon has to survive being drawn on
-/// a white game frame. A dilated dark halo is what makes that work.
 #[test]
 fn icons_carry_a_halo_so_they_read_without_a_plate() {
     let f = icon_face(Icon::FastForward, 18.0, [255, 255, 255]);
@@ -112,13 +100,8 @@ fn icons_carry_a_halo_so_they_read_without_a_plate() {
     );
 }
 
-/// The frame is the union of every glyph's extent, so a new icon can quietly grow the box
-/// that all of them are rastered into and shove the whole HUD row sideways. The bolt has to
-/// fit inside the box the existing eight already agreed on.
 #[test]
 fn a_new_icon_does_not_resize_the_box_the_others_share() {
-    // Tracks HUD_ICON_PX: this is the union at 24 px. If it moves without the size moving,
-    // the new glyph is wider or taller than every icon before it.
     assert_eq!(
         icon_box(HUD_ICON_PX),
         (26, 27),
@@ -126,11 +109,38 @@ fn a_new_icon_does_not_resize_the_box_the_others_share() {
     );
 }
 
-/// Callers lay out against `icon_box` before they know which glyph lands in it, so it has to
-/// include the halo or every icon overflows its slot by a pixel.
 #[test]
 fn icon_box_accounts_for_the_halo() {
     let (bw, bh) = icon_box(18.0);
     let f = icon_face(Icon::Volume, 18.0, [255, 255, 255]);
     assert_eq!((bw, bh), (f.w, f.h));
+}
+
+#[test]
+fn link_badges_share_the_icon_box_and_differ() {
+    let link = badge_face(Badge::Link, HUD_ICON_PX, [255, 255, 255]);
+    let broken = badge_face(Badge::LinkBroken, HUD_ICON_PX, [255, 255, 255]);
+    assert_eq!(
+        (link.w, link.h),
+        icon_box(HUD_ICON_PX),
+        "the link badge would move the corner"
+    );
+    assert_eq!((broken.w, broken.h), icon_box(HUD_ICON_PX));
+    assert_ne!(
+        link.rgba, broken.rgba,
+        "a broken link looks like a live one"
+    );
+    assert!(
+        link.rgba.chunks(4).any(|p| p[3] == 255),
+        "the badge drew nothing"
+    );
+}
+
+#[test]
+fn a_link_badge_wears_its_colour() {
+    let face = badge_face(Badge::Link, HUD_ICON_PX, LINK_HOST_INK);
+    assert!(face
+        .rgba
+        .chunks(4)
+        .any(|p| p[3] == 255 && p[..3] == LINK_HOST_INK));
 }

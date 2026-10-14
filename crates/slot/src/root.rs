@@ -5,21 +5,34 @@ use slot_store::System;
 use crate::audio::Profile;
 use crate::input::Remap;
 
-/// The seven top level folders of a content root. A card that has never held slot. has none
-/// of them, and every write path below assumes its own is already there.
-pub const DIRS: [&str; 7] = [
+/// Top level folders of a content root. A card that has never held slot. has none of them,
+/// and every write path below assumes its own is already there.
+pub const DIRS: [&str; 20] = [
     "BIOS",
+    "Config",
     "Games",
+    "Games/GBA",
+    "Games/GB",
+    "Games/GBC",
     "Labels",
+    "Labels/GBA",
+    "Labels/GB",
+    "Labels/GBC",
     "Saves",
+    "Saves/GBA",
+    "Saves/GB",
+    "Saves/GBC",
     "States",
+    "States/GBA",
+    "States/GB",
+    "States/GBC",
     "System",
     "Wallpapers",
 ];
 
-/// Where a card's own typefaces go. Nested under `System` rather than beside the seven:
-/// the folders out there are things the user fills from the outside — ROMs, art, saves — and
-/// this one is a system setting, like `theme.txt` and `selected_core.ini` next to it.
+/// Where a card's own typefaces go. Nested under `System` rather than beside the library
+/// folders: those are things the user fills from the outside — ROMs, art, saves — and this
+/// one is a system setting, like `theme.txt` and `selected_core.ini` next to it.
 const FONT_DIR: &str = "System/fonts";
 
 /// Best effort: an unmounted or read only card is an empty shelf, not a boot failure.
@@ -27,7 +40,7 @@ pub fn ensure(root: &Path) {
     for sub in DIRS {
         let _ = std::fs::create_dir_all(root.join(sub));
     }
-        let _ = std::fs::create_dir_all(root.join(FONT_DIR));
+    let _ = std::fs::create_dir_all(root.join(FONT_DIR));
         // The screen-overlay folder, flat: the user drops `gb.png`, `gb-01.png`, `gbc.png`, …
         // straight into it. See `overlay_files` for the naming. Creating it is all upside — a
         // card with no art in it simply shows the built-in look.
@@ -569,18 +582,34 @@ pub fn migrate(root: &Path) {
         }
         _ => {}
     }
+    if let Err(e) = slot_store::move_config(root) {
+        eprintln!("slot: config: {e}");
+    }
 }
 
-/// Reported to the core as the libretro system directory. `gba_bios.bin` present means the
-/// real BIOS, absent means mGBA's HLE BIOS. Neither is an error.
 pub fn bios_dir(root: &Path) -> PathBuf {
     root.join("BIOS")
 }
 
-/// The battery saves, under the machine's own folder. A GB `Tetris` and a GBA `Tetris` share a
-/// stem, so on a flat card they also share one `.sav`; sorting by machine is what keeps each
-/// game's bytes its own. `bios_dir` is the one folder that does **not** sort: a bios is the
-/// machine, not the game, so it stays shared.
-pub fn saves_dir(root: &Path, system: System) -> PathBuf {
-    root.join("Saves").join(system.dir_name())
+const BIOS_FILE: &str = "gba_bios.bin";
+
+const BIOS_BYTES: u64 = 16 * 1024;
+const BIOS_FIRST_BYTE: u8 = 0x18;
+
+pub fn has_real_bios(root: &Path) -> bool {
+    let Ok(mut f) = std::fs::File::open(bios_dir(root).join(BIOS_FILE)) else {
+        return false;
+    };
+    if !f.metadata().is_ok_and(|m| m.len() == BIOS_BYTES) {
+        return false;
+    }
+    let mut first = [0u8; 1];
+    std::io::Read::read_exact(&mut f, &mut first).is_ok() && first[0] == BIOS_FIRST_BYTE
+}
+
+/// The battery-save folder. Machine subfolders (`GBA`, `GB`, `GBC`) live under it; a GB
+/// `Tetris` and a GBA `Tetris` share a stem, so sorting by machine is what keeps each game's
+/// bytes its own. `bios_dir` does not sort: a bios is the machine, not the game.
+pub fn saves_dir(root: &Path) -> PathBuf {
+    root.join("Saves")
 }

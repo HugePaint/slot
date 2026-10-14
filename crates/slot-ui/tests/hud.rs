@@ -1,6 +1,6 @@
 use slot_ui::{
-    ff_badge, icon_face, Draw, FfState, Hud, HudKind, Icon, Toast, OUT_H, OUT_W, PLATE_H, PLATE_Y,
-    TOP_BAND_H,
+    ff_badge, icon_box, icon_face, Badge, Draw, FfState, Hud, HudKind, Icon, LinkBadge, TexId,
+    Toast, HUD_ICON_PX, LINK_HOST_INK, LINK_JOIN_INK, OUT_H, OUT_W, PLATE_H, PLATE_Y, TOP_BAND_H,
 };
 
 fn top_edge(d: &Draw) -> Option<f32> {
@@ -17,7 +17,6 @@ fn bottom_edge(d: &Draw) -> Option<f32> {
     }
 }
 
-/// Width of the filled part of the bar, which is the last rect in the list.
 fn fill(kind: HudKind, value: u8) -> f32 {
     let mut h = Hud::new();
     h.show(kind, value, false, 0);
@@ -37,7 +36,6 @@ fn hud_fades_after_1500ms() {
     assert!(!h.visible(2500));
 }
 
-/// A zero timestamp is not an adjustment. Without this every boot opens with a bar on it.
 #[test]
 fn nothing_shows_until_something_is_adjusted() {
     assert!(!Hud::new().visible(0));
@@ -121,7 +119,6 @@ fn the_plate_hangs_under_the_letter_band() {
     );
 }
 
-/// Over a white game frame a white bar on a translucent white track is invisible.
 #[test]
 fn the_hud_draws_a_dark_plate_behind_itself() {
     let mut h = Hud::new();
@@ -145,12 +142,10 @@ fn the_hud_draws_a_dark_plate_behind_itself() {
 
 #[test]
 fn muted_volume_uses_the_muted_icon() {
-    // Turned down to nothing, silenced, and neither: three states and three glyphs. Zero and
-    // muted draw the same empty bar, so the glyph is the only thing carrying the difference.
-    assert_eq!(HudKind::Volume.icon(0, false), Icon::VolumeZero);
-    assert_eq!(HudKind::Volume.icon(0, true), Icon::VolumeMuted);
-    assert_eq!(HudKind::Volume.icon(40, true), Icon::VolumeMuted);
-    assert_eq!(HudKind::Volume.icon(40, false), Icon::Volume);
+    assert_eq!(HudKind::Volume.icon(0, false, false), Icon::VolumeZero);
+    assert_eq!(HudKind::Volume.icon(0, true, false), Icon::VolumeMuted);
+    assert_eq!(HudKind::Volume.icon(40, true, false), Icon::VolumeMuted);
+    assert_eq!(HudKind::Volume.icon(40, false, false), Icon::Volume);
 }
 
 #[test]
@@ -177,8 +172,6 @@ fn an_empty_rewind_buffer_still_draws_an_empty_bar() {
     );
 }
 
-/// L2 can be let go while a level bar is still on its own timer. Only the rewind bar leaves
-/// with it.
 #[test]
 fn releasing_rewind_leaves_a_level_bar_alone() {
     let mut h = Hud::new();
@@ -187,8 +180,6 @@ fn releasing_rewind_leaves_a_level_bar_alone() {
     assert!(h.visible(0));
 }
 
-/// One glyph in both states, and a different one in each. Two glyphs for the latch would
-/// widen the badge and shift it the moment it locked.
 #[test]
 fn held_and_latched_fast_forward_are_one_glyph_each_and_differ() {
     let held = ff_badge(FfState::Held).expect("held draws nothing");
@@ -200,7 +191,6 @@ fn held_and_latched_fast_forward_are_one_glyph_each_and_differ() {
     assert_eq!(ff_badge(FfState::Off), None);
 }
 
-/// Same footprint, so latching cannot make the badge jump.
 #[test]
 fn both_fast_forward_glyphs_share_one_box() {
     let held = icon_face(Icon::FastForward, 18.0, [255, 255, 255]);
@@ -212,8 +202,6 @@ fn both_fast_forward_glyphs_share_one_box() {
     );
 }
 
-/// Fast forward is not a level, so the bar's own timer never starts and nothing fades it
-/// out. The badge has to survive that on its own, without dragging a plate up with it.
 #[test]
 fn the_badge_outlives_the_bar_timer_without_a_plate() {
     let mut h = Hud::new();
@@ -241,9 +229,6 @@ fn the_badge_leaves_when_fast_forward_stops() {
     assert!(out.is_empty(), "the plate outlived the fast forward");
 }
 
-/// Fast forward can be latched for minutes. A full width plate over the game for all of it
-/// is a worse trade than the halo the icon carries, so the badge stands alone. The pair
-/// matters together: the second half is what stops this passing by drawing no plate ever.
 #[test]
 fn the_ff_badge_draws_no_plate_but_the_bar_still_does() {
     let full = |out: &Vec<Draw>| {
@@ -267,4 +252,60 @@ fn the_ff_badge_draws_no_plate_but_the_bar_still_does() {
     let mut out = Vec::new();
     with_bar.draw(0, 0.0, &mut out);
     assert_eq!(full(&out), 1, "the bar lost the plate it is read against");
+}
+
+fn badges() -> Vec<TexId> {
+    (0..4).map(|i| TexId::from_raw(900 + i)).collect()
+}
+
+#[test]
+fn the_link_badge_takes_the_fast_forward_corner_without_a_plate() {
+    let mut h = Hud::new();
+    h.set_link_faces(badges());
+    h.set_link(LinkBadge::Hosting);
+    let mut out = Vec::new();
+    h.draw(60_000, &mut out);
+    assert_eq!(out.len(), 1, "the badge came with company: {out:?}");
+    let (w, _) = icon_box(HUD_ICON_PX);
+    assert!(matches!(out[0], Draw::Tex { tex, x, .. }
+        if tex == TexId::from_raw(900) && x == OUT_W as f32 - 12.0 - w as f32));
+}
+
+#[test]
+fn each_link_badge_has_its_own_face_and_off_has_none() {
+    assert_eq!(LinkBadge::Off.face_index(), None);
+    for (i, b) in LinkBadge::FACES.iter().enumerate() {
+        assert_eq!(b.face_index(), Some(i));
+    }
+    assert_eq!(LinkBadge::HostingLost.colour(), Some(LINK_HOST_INK));
+    assert_eq!(LinkBadge::JoinedLost.colour(), Some(LINK_JOIN_INK));
+    assert_eq!(LinkBadge::JoinedLost.badge(), Some(Badge::LinkBroken));
+    assert_eq!(LinkBadge::Hosting.badge(), Some(Badge::Link));
+}
+
+#[test]
+fn the_link_badge_outranks_fast_forward() {
+    let mut h = Hud::new();
+    h.set_icons((0..10).map(TexId::from_raw).collect());
+    h.set_link_faces(badges());
+    h.set_ff(FfState::Latched);
+    h.set_link(LinkBadge::JoinedLost);
+    let mut out = Vec::new();
+    h.draw(0, &mut out);
+    let texes: Vec<TexId> = out
+        .iter()
+        .filter_map(|d| match d {
+            Draw::Tex { tex, .. } => Some(*tex),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texes, vec![TexId::from_raw(903)]);
+}
+
+#[test]
+fn volume_on_headphones_shows_headphones() {
+    assert_eq!(HudKind::Volume.icon(40, false, true), Icon::Headphones);
+    assert_eq!(HudKind::Volume.icon(0, false, true), Icon::Headphones);
+    assert_eq!(HudKind::Volume.icon(40, true, true), Icon::HeadphonesMuted);
+    assert_eq!(HudKind::Brightness.icon(4, false, true), Icon::Brightness);
 }

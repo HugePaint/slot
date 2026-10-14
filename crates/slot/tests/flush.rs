@@ -5,13 +5,12 @@ use std::sync::Arc;
 
 use common::{app_playing_in, app_playing_with, tmp_root_with_carts};
 use slot::app::Phase;
+use slot::persist;
 use slot::persist::Snapshot;
 use slot_input::{Action, Btn};
 use slot_power::{Battery, Charge, LedState};
-use slot_store::{read_slot_state, Core, StateRing};
+use slot_store::{read_slot_state, Core, Platform, StateRing};
 
-/// Today's behaviour is what an unknown charge state has to go on reproducing, so the
-/// pre-existing cases read as unknown rather than as a state the device asserted.
 fn unknown(percent: u8) -> Battery {
     Battery {
         percent,
@@ -24,7 +23,7 @@ fn power_press_edge_flushes_immediately_not_on_release() {
     let d = tmp_root_with_carts(&["Emerald"]);
     let mut a = app_playing_in(d.path(), "Emerald");
     a.apply(Action::PowerTap);
-    let r = StateRing::new(d.path(), Core::Mgba, "Emerald");
+    let r = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
     assert!(
         r.read_resume().unwrap().is_some(),
         "flush must happen on press, a held power button is a hardware cutoff"
@@ -36,15 +35,20 @@ fn autosave_fires_at_sixty_seconds_and_not_before() {
     let d = tmp_root_with_carts(&["Emerald"]);
     let mut a = app_playing_in(d.path(), "Emerald");
     a.tick_ms(59_999);
-    assert!(StateRing::new(d.path(), Core::Mgba, "Emerald")
-        .read_resume()
-        .unwrap()
-        .is_none());
+    assert!(
+        StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
+            .read_resume()
+            .unwrap()
+            .is_none()
+    );
     a.tick_ms(60_000);
-    assert!(StateRing::new(d.path(), Core::Mgba, "Emerald")
-        .read_resume()
-        .unwrap()
-        .is_some());
+    a.settle_saves();
+    assert!(
+        StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
+            .read_resume()
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]
@@ -52,14 +56,15 @@ fn battery_critical_flushes_and_powers_off() {
     let d = tmp_root_with_carts(&["Emerald"]);
     let mut a = app_playing_in(d.path(), "Emerald");
     a.on_battery(unknown(3));
-    assert!(StateRing::new(d.path(), Core::Mgba, "Emerald")
-        .read_resume()
-        .unwrap()
-        .is_some());
+    assert!(
+        StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
+            .read_resume()
+            .unwrap()
+            .is_some()
+    );
     assert!(a.powering_off());
 }
 
-/// POWER is the lid on a device whose hinge the frontend may never see.
 #[test]
 fn a_power_tap_dozes_and_a_second_one_wakes() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -70,13 +75,6 @@ fn a_power_tap_dozes_and_a_second_one_wakes() {
     assert!(matches!(a.phase(), Phase::Playing { .. }));
 }
 
-/// The flush lands when the menu opens, not when a choice is made. The user may hold on
-/// past the PMIC's own six second cutoff, which takes the rails away whatever the software
-/// wanted — so the state has to be durable before they are given anything to read.
-///
-/// Powering off from the menu goes through the OS rather than that hardware cut: the cut
-/// syncs nothing and unloads nothing, and on this board a shutdown that leaves the GPU
-/// module loaded hangs the machine with the rails up.
 #[test]
 fn opening_the_menu_flushes_and_the_choice_powers_off() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -88,7 +86,7 @@ fn opening_the_menu_flushes_and_the_choice_powers_off() {
         "the hold asks the question, it does not answer it"
     );
     assert!(
-        StateRing::new(d.path(), Core::Mgba, "Emerald")
+        StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
             .read_resume()
             .unwrap()
             .is_some(),
@@ -105,8 +103,6 @@ fn opening_the_menu_flushes_and_the_choice_powers_off() {
     );
 }
 
-/// The release stopped meaning anything once the hold started raising a menu: the choice is
-/// the commitment, and it is made with A.
 #[test]
 fn a_release_after_the_hold_does_nothing_on_its_own() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -117,9 +113,6 @@ fn a_release_after_the_hold_does_nothing_on_its_own() {
     assert_eq!(a.power_menu(), Some(0), "and leaves the menu up");
 }
 
-/// A dark panel is a grace period, not a state: the machine is still running flat out behind
-/// it at 400-700 mA. When it runs out the device stops for real, because the one thing it
-/// cannot do is wake itself back up from a sleep.
 #[test]
 fn an_idle_doze_times_out_into_a_power_off() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -129,7 +122,7 @@ fn an_idle_doze_times_out_into_a_power_off() {
     a.on_doze_timeout();
     assert!(a.powering_off(), "the timeout powers off");
     assert!(
-        StateRing::new(d.path(), Core::Mgba, "Emerald")
+        StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
             .read_resume()
             .unwrap()
             .is_some(),
@@ -137,17 +130,18 @@ fn an_idle_doze_times_out_into_a_power_off() {
     );
 }
 
-/// A gauge one point above the threshold is a warning, not a cutoff.
 #[test]
 fn a_battery_above_the_threshold_keeps_playing() {
     let d = tmp_root_with_carts(&["Emerald"]);
     let mut a = app_playing_in(d.path(), "Emerald");
     a.on_battery(unknown(20));
     assert!(!a.powering_off());
-    assert!(StateRing::new(d.path(), Core::Mgba, "Emerald")
-        .read_resume()
-        .unwrap()
-        .is_none());
+    assert!(
+        StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
+            .read_resume()
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -163,8 +157,6 @@ fn the_autosave_repeats_rather_than_firing_once() {
     assert_eq!(flushes.load(Ordering::Relaxed), 2);
 }
 
-/// The invariant is 60 s since the state was last durable, not 60 s since the last
-/// autosave, so a lid close in between moves the deadline with it.
 #[test]
 fn a_flush_resets_the_autosave_clock() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -194,8 +186,6 @@ fn counting() -> (Box<dyn Snapshot>, Arc<AtomicUsize>) {
     )
 }
 
-/// Counts what asked it for a state, which is the only way to tell one flush from the
-/// next once they have landed on the same file.
 struct CountingSnapshot {
     flushes: Arc<AtomicUsize>,
 }
@@ -220,8 +210,24 @@ fn at(percent: u8, charge: Charge) -> Battery {
     Battery { percent, charge }
 }
 
-/// Plug in a flat device, boot it, and the frontend used to flush and power off with the
-/// cable in. The charge state is the whole reason this can now be told apart.
+#[test]
+fn one_stem_on_two_platforms_writes_two_saves() {
+    let d = tempfile::tempdir().unwrap();
+    persist::write_sav(d.path(), Platform::Gba, "Tetris", &[1u8; 32]).unwrap();
+    persist::write_sav(d.path(), Platform::Gb, "Tetris", &[2u8; 8]).unwrap();
+
+    assert_eq!(
+        persist::read_sav(d.path(), Platform::Gba, "Tetris").unwrap(),
+        vec![1u8; 32]
+    );
+    assert_eq!(
+        persist::read_sav(d.path(), Platform::Gb, "Tetris").unwrap(),
+        vec![2u8; 8]
+    );
+    assert!(d.path().join("Saves/GBA/Tetris.sav").is_file());
+    assert!(d.path().join("Saves/GB/Tetris.sav").is_file());
+}
+
 #[test]
 fn a_critical_battery_on_a_charger_keeps_running() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -233,8 +239,6 @@ fn a_critical_battery_on_a_charger_keeps_running() {
     );
 }
 
-/// A full battery reading three percent is a gauge that has not caught up, not a device
-/// about to die.
 #[test]
 fn a_critical_battery_reading_full_keeps_running() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -249,39 +253,32 @@ fn a_critical_battery_that_is_discharging_still_powers_off() {
     let mut a = app_playing_in(d.path(), "Emerald");
     a.on_battery(at(3, Charge::Discharging));
     assert!(a.powering_off());
-    assert!(StateRing::new(d.path(), Core::Mgba, "Emerald")
-        .read_resume()
-        .unwrap()
-        .is_some());
+    assert!(
+        StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
+            .read_resume()
+            .unwrap()
+            .is_some()
+    );
 }
 
-/// THE INVARIANT. If `status` turns out to be unpopulated on the SP — and on this PMIC
-/// `current_now` already reads empty — every reading is Unknown, and the device has to go
-/// on protecting itself exactly as it did before any of this was added. If this test ever
-/// goes green by doing nothing, the feature has become a regression on real hardware.
 #[test]
 fn an_unknown_charge_state_powers_off_exactly_as_before() {
     let d = tmp_root_with_carts(&["Emerald"]);
     let mut a = app_playing_in(d.path(), "Emerald");
     a.on_battery(at(3, Charge::Unknown));
     assert!(a.powering_off());
-    assert!(StateRing::new(d.path(), Core::Mgba, "Emerald")
-        .read_resume()
-        .unwrap()
-        .is_some());
+    assert!(
+        StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
+            .read_resume()
+            .unwrap()
+            .is_some()
+    );
 }
 
-/// The case band's left shelf used to sit blank for the first ten seconds of every boot,
-/// because `battery_at`'s boot value predated there being any platform to read: the deadline
-/// only started counting down once `App::new` ran, not once a real gauge existed behind it.
-/// `set_power` is the actual moment a reading becomes possible, so that is where the
-/// deadline has to reset to zero-from-now rather than trusting a countdown that had already
-/// been running against nothing.
 #[test]
 fn the_battery_is_read_the_moment_power_is_attached_not_ten_seconds_later() {
     let d = tmp_root_with_carts(&["Emerald"]);
     let (mut a, _charge, _percent) = common::app_playing_with_charge(d.path(), "Emerald");
-    // The very next tick after `set_power`, nowhere near a full `BATTERY_POLL_MS` from boot.
     a.tick_ms(1);
     assert!(
         a.battery().is_some(),
@@ -289,8 +286,6 @@ fn the_battery_is_read_the_moment_power_is_attached_not_ten_seconds_later() {
     );
 }
 
-/// A cable going in is a step change, not a gauge drifting. Ten seconds of a stale bolt is
-/// the thing the second tick exists to prevent.
 #[test]
 fn the_charge_state_is_picked_up_inside_a_second() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -306,10 +301,6 @@ fn the_charge_state_is_picked_up_inside_a_second() {
     );
 }
 
-/// The percent rides the slow tick, which is what its existing comment says it is for. The
-/// gauge is moved behind the fast tick's back between the two ticks: if the fast tick ever
-/// re-read the whole snapshot instead of just the charge half, it would pick up the moved
-/// percent and this would catch it.
 #[test]
 fn the_percent_survives_a_fast_tick_that_only_moved_the_charge_state() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -330,9 +321,6 @@ fn the_percent_survives_a_fast_tick_that_only_moved_the_charge_state() {
     );
 }
 
-/// A flat percent alone would read Low; the point of this test is that a cable in makes it
-/// Charging instead. Left at the rig's default 50%, an inverted precedence would still pass,
-/// so the percent is driven under the threshold here as well.
 #[test]
 fn charging_outranks_low_so_a_flat_device_on_a_cable_is_not_red() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -341,4 +329,102 @@ fn charging_outranks_low_so_a_flat_device_on_a_cable_is_not_red() {
     percent.store(3, Ordering::Relaxed);
     a.tick_ms(10_000);
     assert_eq!(a.led_state(), LedState::Charging);
+}
+
+#[test]
+fn an_autosave_lands_once_the_writes_settle() {
+    let d = tmp_root_with_carts(&["Emerald"]);
+    let mut a = app_playing_in(d.path(), "Emerald");
+    a.tick_ms(60_000);
+    a.settle_saves();
+    assert!(
+        StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
+            .read_resume()
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn a_lid_close_right_after_an_autosave_leaves_the_lids_state() {
+    let d = tmp_root_with_carts(&["Emerald"]);
+    let (snapshot, _) = counting();
+    let mut a = app_playing_with(d.path(), "Emerald", snapshot);
+    a.tick_ms(60_000);
+    a.apply(Action::LidClose);
+    a.settle_saves();
+    let state = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
+        .read_resume()
+        .unwrap()
+        .expect("no resume written");
+    assert_eq!(
+        state,
+        vec![1u8; 64],
+        "the autosave landed over the lid's save"
+    );
+}
+
+fn lock_the_card(root: &std::path::Path) {
+    let states = root.join("States");
+    let _ = std::fs::remove_dir_all(&states);
+    std::fs::write(&states, b"").unwrap();
+}
+
+#[test]
+fn an_autosave_the_card_refuses_puts_up_a_banner() {
+    let d = tmp_root_with_carts(&["Emerald"]);
+    let mut a = app_playing_in(d.path(), "Emerald");
+    lock_the_card(d.path());
+    a.tick_ms(60_000);
+    a.settle_saves();
+    a.tick_ms(60_010);
+    assert!(a.card_alarm(), "a refused autosave raised no alarm");
+    a.tick_ms(3_600_000);
+    assert!(
+        a.card_alarm(),
+        "the alarm went away while the card still refused"
+    );
+}
+
+#[test]
+fn the_alarm_clears_once_the_card_takes_a_write_again() {
+    let d = tmp_root_with_carts(&["Emerald"]);
+    let mut a = app_playing_in(d.path(), "Emerald");
+    lock_the_card(d.path());
+    a.tick_ms(60_000);
+    a.settle_saves();
+    a.tick_ms(60_010);
+    assert!(a.card_alarm());
+    std::fs::remove_file(d.path().join("States")).unwrap();
+    a.tick_ms(120_000);
+    a.settle_saves();
+    a.tick_ms(120_010);
+    assert!(!a.card_alarm(), "the alarm stayed after a write landed");
+}
+
+#[test]
+fn an_autosave_that_lands_puts_up_no_banner() {
+    let d = tmp_root_with_carts(&["Emerald"]);
+    let mut a = app_playing_in(d.path(), "Emerald");
+    a.tick_ms(60_000);
+    a.settle_saves();
+    a.tick_ms(60_010);
+    assert!(!a.card_alarm());
+}
+
+#[test]
+fn a_card_the_kernel_made_read_only_raises_the_alarm_without_a_save() {
+    let d = tmp_root_with_carts(&["Emerald"]);
+    let (mut a, read_only) = common::app_playing_with_card(d.path(), "Emerald");
+    a.tick_ms(1_000);
+    assert!(!a.card_alarm());
+    read_only.store(true, Ordering::Relaxed);
+    a.tick_ms(3_100);
+    assert!(a.card_alarm(), "a read-only card went unnoticed");
+    read_only.store(false, Ordering::Relaxed);
+    a.tick_ms(5_200);
+    assert!(
+        !a.card_alarm(),
+        "the alarm stayed once the card was writable"
+    );
 }

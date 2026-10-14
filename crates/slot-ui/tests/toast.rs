@@ -1,6 +1,9 @@
+use slot_store::GbPalette;
 use slot_ui::lang;
 use slot_ui::text::{missing_in, set_font};
-use slot_ui::{toast_face, toast_rect, Draw, Hud, HudKind, Toast, OUT_W, PLATE_H};
+use slot_ui::{
+    toast_face, toast_rect, Draw, Hud, HudKind, Toast, ALARM_BAND_H, OUT_H, OUT_W, PLATE_H,
+};
 
 /// The face the app loads off the card at boot, by the path the deploy puts it at.
 ///
@@ -42,6 +45,80 @@ fn saving_and_loading_say_which_one_happened() {
 }
 
 #[test]
+fn the_link_shortcut_on_the_wrong_core_says_to_switch() {
+    assert_eq!(Toast::NeedsGpsp.text(), "Please switch to gpSP");
+    let f = toast_face(Toast::NeedsGpsp);
+    assert!(f.rgba.chunks(4).any(|p| p[3] > 0), "the banner is blank");
+}
+
+#[test]
+fn a_cart_gpsp_cannot_link_says_there_is_no_link() {
+    assert_eq!(Toast::NoLink.text(), "No link support");
+    let f = toast_face(Toast::NoLink);
+    assert!(f.rgba.chunks(4).any(|p| p[3] > 0), "the banner is blank");
+}
+
+#[test]
+fn the_banner_says_what_happened_and_never_what_is_on_screen() {
+    let all = Toast::all();
+    assert_eq!(
+        all[..15],
+        [
+            Toast::StateSaved,
+            Toast::StateLoaded,
+            Toast::NeedsGpsp,
+            Toast::NoLink,
+            Toast::LinkEnded,
+            Toast::PeerEnded,
+            Toast::BiosMismatch,
+            Toast::ColourOn,
+            Toast::ColourOff,
+            Toast::ShaderOff,
+            Toast::ShaderLcd3x,
+            Toast::ShaderGrid,
+            Toast::ShaderDot,
+            Toast::ShaderSimpletex,
+            Toast::CardUnwritable,
+        ],
+        "a banner was added or dropped: every face is uploaded by its place in this list"
+    );
+    assert_eq!(
+        all[15..],
+        GbPalette::all().map(Toast::Palette).collect::<Vec<_>>()[..],
+        "the palette banners do not follow the fixed ones in palette order"
+    );
+    for (i, t) in all.iter().enumerate() {
+        assert_eq!(t.index(), i, "{t:?} does not answer to its own place");
+        let f = toast_face(*t);
+        assert!(
+            f.rgba.chunks(4).any(|p| p[3] > 0),
+            "{t:?} rastered to a blank banner"
+        );
+    }
+}
+
+#[test]
+fn no_toast_is_shrunk_to_fit_its_box() {
+    let rows = |t: Toast| {
+        let f = toast_face(t);
+        let inked: Vec<usize> = (0..f.h as usize)
+            .filter(|y| (0..f.w as usize).any(|x| f.rgba[(y * f.w as usize + x) * 4 + 3] > 0))
+            .collect();
+        let first = *inked.first().expect("the banner is blank");
+        let last = *inked.last().expect("the banner is blank");
+        (first, last)
+    };
+    let (top, bottom) = rows(Toast::StateSaved);
+    for t in Toast::all().into_iter().filter(|t| !t.alarm()) {
+        let (a, b) = rows(t);
+        assert!(
+            a.abs_diff(top) <= 1 && b.abs_diff(bottom) <= 1,
+            "{t:?} sits on rows {a}..{b} where the others sit on {top}..{bottom}, so it was shrunk to fit"
+        );
+    }
+}
+
+#[test]
 fn a_toast_fades_on_the_same_curve_as_the_bar() {
     let mut h = Hud::new();
     h.toast(Toast::StateSaved, 1_000);
@@ -50,8 +127,25 @@ fn a_toast_fades_on_the_same_curve_as_the_bar() {
 }
 
 #[test]
+fn saying_the_same_thing_twice_re_shows_it_rather_than_stacking() {
+    let mut h = Hud::new();
+    h.toast(Toast::StateSaved, 1_000);
+    h.toast(Toast::StateSaved, 2_400);
+    assert_eq!(h.said(3_400), Some(Toast::StateSaved), "it did not re-show");
+    assert_eq!(h.said(3_900), None, "it never faded");
+}
+
+#[test]
+fn a_second_banner_replaces_the_first() {
+    let mut h = Hud::new();
+    h.toast(Toast::StateSaved, 1_000);
+    h.toast(Toast::LinkEnded, 1_100);
+    assert_eq!(h.said(1_200), Some(Toast::LinkEnded));
+}
+
+#[test]
 fn a_toast_is_centred() {
-    let (x, _, w, _) = toast_rect();
+    let (x, _, w, _) = toast_rect(Toast::StateSaved);
     assert_eq!(x + w / 2.0, OUT_W as f32 / 2.0);
 }
 
@@ -76,8 +170,6 @@ fn a_toast_carries_its_own_halo() {
     assert!(dark, "there is nothing dark behind the type");
 }
 
-/// The toast reads against the same plate the level bar does, in the same place. It used to
-/// sit below the band with no backing, which put two different treatments on one screen.
 #[test]
 fn a_toast_sits_in_the_plate_band_and_is_backed_by_it() {
     let mut h = Hud::new();
@@ -97,15 +189,13 @@ fn a_toast_sits_in_the_plate_band_and_is_backed_by_it() {
     assert!(colour[3] > 0.6, "the plate is too faint to give contrast");
     assert!((*ph - PLATE_H).abs() < 0.01, "the plate is not the band");
 
-    let (_, y, _, th) = toast_rect();
+    let (_, y, _, th) = toast_rect(Toast::StateSaved);
     assert!(
         y >= 0.0 && y + th <= PLATE_H,
         "the toast at {y} is outside the band"
     );
 }
 
-/// They share one strip, so only one can have it. A toast names something that just
-/// happened; a level is visible in its own effect.
 #[test]
 fn a_toast_takes_the_band_from_the_bar() {
     let mut h = Hud::new();
@@ -121,4 +211,122 @@ fn a_toast_takes_the_band_from_the_bar() {
         both.len() < bars,
         "the bar is still drawn underneath the toast"
     );
+}
+
+#[test]
+fn a_palette_banner_names_the_palette_without_its_boot_combo() {
+    let p = GbPalette::parse("GBC Dark Green →A").unwrap();
+    assert_eq!(Toast::Palette(p).text(), "GBC Dark Green");
+}
+
+fn band(h: &Hud, now: u64) -> Option<(f32, f32, [f32; 4])> {
+    let mut out = Vec::new();
+    h.draw(now, &mut out);
+    out.iter().rev().find_map(|d| match d {
+        Draw::Rect {
+            y, w, h, colour, ..
+        } if *w == OUT_W as f32 && *h == ALARM_BAND_H => Some((*y, *h, *colour)),
+        _ => None,
+    })
+}
+
+#[test]
+fn the_card_alarm_stays_up_until_it_is_cleared() {
+    let mut h = Hud::new();
+    h.set_alarm(true, 1_000);
+    assert!(
+        band(&h, 3_600_000).is_some(),
+        "the alarm went away by itself"
+    );
+    h.set_alarm(false, 3_600_001);
+    let mut out = Vec::new();
+    h.draw(3_600_002, &mut out);
+    assert!(out.is_empty(), "the alarm outlived a write that landed");
+}
+
+#[test]
+fn the_card_alarm_is_a_red_band_across_the_middle_that_pulses() {
+    let mut h = Hud::new();
+    h.set_alarm(true, 0);
+    let (y, bh, bright) = band(&h, 0).expect("no alarm band");
+    let middle = OUT_H as f32 / 2.0;
+    assert!(
+        (y + bh / 2.0 - middle).abs() < 0.5,
+        "the band is not centred"
+    );
+    assert!(
+        bright[0] > 2.0 * bright[1] && bright[0] > 2.0 * bright[2],
+        "{bright:?} is not red"
+    );
+    let (_, _, dim) = band(&h, 250).unwrap();
+    assert!(
+        dim[0] < bright[0] - 0.2,
+        "the band did not pulse: {bright:?} then {dim:?}"
+    );
+}
+
+#[test]
+fn a_second_failure_does_not_restart_the_pulse() {
+    let mut h = Hud::new();
+    h.set_alarm(true, 0);
+    h.set_alarm(true, 250);
+    let mut fresh = Hud::new();
+    fresh.set_alarm(true, 0);
+    assert_eq!(band(&h, 500), band(&fresh, 500));
+}
+
+#[test]
+fn the_card_alarm_text_is_large_and_inside_its_band() {
+    let alarm = toast_face(Toast::CardUnwritable);
+    let toast = toast_face(Toast::StateSaved);
+    assert!(alarm.h > toast.h && alarm.w > toast.w);
+    let (x, y, w, th) = toast_rect(Toast::CardUnwritable);
+    let top = (OUT_H as f32 - ALARM_BAND_H) / 2.0;
+    assert!(
+        y >= top && y + th <= top + ALARM_BAND_H,
+        "the alarm text overhangs its band"
+    );
+    assert_eq!(x + w / 2.0, OUT_W as f32 / 2.0);
+}
+
+#[test]
+fn the_card_alarm_is_drawn_over_the_volume_bar() {
+    let mut h = Hud::new();
+    h.set_alarm(true, 0);
+    h.show(HudKind::Volume, 50, false, 1_000);
+    let mut out = Vec::new();
+    h.draw(1_100, &mut out);
+    let alarm = out
+        .iter()
+        .position(|d| matches!(d, Draw::Rect { h, .. } if *h == ALARM_BAND_H))
+        .expect("the bar hid the alarm");
+    assert!(alarm > 0, "the bar was not drawn under the alarm");
+    assert!(
+        out[alarm + 1..]
+            .iter()
+            .all(|d| matches!(d, Draw::Tex { .. })),
+        "something was drawn over the alarm band"
+    );
+}
+
+#[test]
+fn the_card_alarm_says_what_failed_and_what_it_costs() {
+    assert_eq!(Toast::CardUnwritable.text(), "Can't write to SD card");
+    assert_eq!(
+        Toast::CardUnwritable.detail(),
+        Some("Progress is not being saved")
+    );
+    assert_eq!(Toast::StateSaved.detail(), None);
+}
+
+#[test]
+fn the_card_alarm_inks_both_of_its_lines() {
+    let f = toast_face(Toast::CardUnwritable);
+    let inked = |rows: std::ops::Range<u32>| {
+        rows.into_iter()
+            .any(|y| (0..f.w).any(|x| f.rgba[((y * f.w + x) * 4 + 3) as usize] > 0x80))
+    };
+    let half = f.h / 2;
+    assert!(inked(0..half), "the first line is blank");
+    assert!(inked(half + 8..f.h), "the second line is blank");
 }

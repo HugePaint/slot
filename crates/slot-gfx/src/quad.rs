@@ -1,6 +1,3 @@
-/// The one piece of geometry in the program: a unit quad every pass transforms in its
-/// vertex shader. GL 3.3 core cannot draw without a vertex array object and ES 2.0 has none,
-/// so the binding is set up once per draw where there is no object to remember it.
 pub struct Quad {
     vao: gl::types::GLuint,
     vbo: gl::types::GLuint,
@@ -8,8 +5,6 @@ pub struct Quad {
 
 const VERTS: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
 
-/// Every shader takes the quad in `a_pos`; ES 1.00 has no layout qualifiers so the
-/// location is bound at link time instead.
 pub const POS_LOCATION: gl::types::GLuint = 0;
 
 impl Quad {

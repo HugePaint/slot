@@ -3,6 +3,7 @@ name = "slot"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [features]
 default = ["host"]
@@ -12,10 +13,6 @@ device = ["slot-gfx/device"]
 lang-en = ["slot-ui/lang-en"]
 
 [dependencies]
-# default-features = false or `host` unifies on for every build: the feature comes in through
-# this line whatever the features above ask for, and the device build compiles glutin and
-# winit it can never use. The `host` and `device` features above are what turn the backend
-# on, and they are mutually exclusive.
 slot-gfx = { path = "../slot-gfx", default-features = false }
 slot-input = { path = "../slot-input" }
 slot-power = { path = "../slot-power" }
@@ -26,12 +23,10 @@ winit = { workspace = true, optional = true }
 cpal = { workspace = true, optional = true }
 gilrs = { workspace = true, optional = true }
 libloading = { workspace = true }
+libc = { workspace = true }
 lz4_flex = { workspace = true }
 png = { workspace = true }
 
 [dev-dependencies]
-# `TexId::from_raw`, so a draw test can name the faces the binary uploads at boot without a
-# live GL context to upload them with. A dev-dependency only: the feature must not reach the
-# device build, where a forged handle would alias whatever real texture sits at that index.
 slot-gfx = { path = "../slot-gfx", default-features = false, features = ["test-support"] }
 tempfile = { workspace = true }

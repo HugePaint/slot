@@ -1,6 +1,9 @@
-// `Profile` is the latency profile the app chooses at boot. A test wants the default one, and
-// says so rather than leaving the argument implied.
-use slot::audio::{ring_capacity, AudioSink, Profile, Ring, StubSink};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use slot::audio::{ring_capacity, AudioSink, Profile, Ring, StubSink, GBA_HZ};
+use slot::emu::{CoreState, EmuHandle, Speed};
+use slot_retro::MockCore;
 
 fn ramp(frames: usize, from: i16) -> Vec<i16> {
     (0..frames * 2)
@@ -20,8 +23,6 @@ fn queued_frames_tracks_the_device_backlog() {
     assert_eq!(r.queued_frames(), primed + 400);
 }
 
-/// The device pulls its first block before the core has run a frame, so an empty ring at
-/// open is an underrun on every boot. Opening at the DRC target is silence instead.
 #[test]
 fn opening_primes_the_ring_to_the_drc_target() {
     let mut s = StubSink::new();
@@ -36,14 +37,11 @@ fn opening_primes_the_ring_to_the_drc_target() {
     );
 }
 
-/// The producer is the emulator, the consumer is the device. Neither is allowed to lose a
-/// sample when they are running at the same average rate, however uneven the arrivals.
 #[test]
 fn a_steady_producer_and_consumer_neither_drop_nor_starve() {
     let r = Ring::new(ring_capacity(48_000));
     let mut out = vec![0i16; 1024];
     for i in 0..2_000 {
-        // A jittery producer: sometimes two device periods' worth, sometimes none.
         let n = match i % 5 {
             0 => 2048,
             4 => 0,
@@ -84,8 +82,6 @@ fn the_ring_holds_enough_to_ride_out_a_late_frame() {
     );
 }
 
-/// The fallback still has to exist, or a paused core deadlocks waiting for a drain that
-/// never comes.
 #[test]
 fn a_muted_or_paused_core_does_not_block_on_audio() {
     let r = std::sync::Arc::new(Ring::new(64));
@@ -96,8 +92,6 @@ fn a_muted_or_paused_core_does_not_block_on_audio() {
     assert!(h.is_finished(), "a muted sink blocked the emulator thread");
 }
 
-/// A device that stops draining must cost the audio and not the game: the emulator waits
-/// once, gives up, and keeps running.
 #[test]
 fn a_device_that_stopped_draining_does_not_freeze_the_emulator() {
     let r = Ring::new(8);
@@ -167,9 +161,6 @@ fn muting_silences_the_device_but_still_drains_the_ring() {
     assert_eq!(r.queued_frames(), 2);
 }
 
-/// The core is held still for the whole of the insert, so nothing is feeding the ring and the
-/// device reads silence out of it. That is the arrangement working. Counted as starvation it
-/// printed "41984 samples starved" after every single cart.
 #[test]
 fn a_held_core_does_not_report_the_device_as_starved() {
     let r = Ring::new(ring_capacity(48_000));
@@ -189,18 +180,11 @@ fn a_held_core_does_not_report_the_device_as_starved() {
         "a held core was reported as a starve"
     );
 
-    // And a running one still is: this is the counter that catches a device the emulator
-    // cannot keep up with.
     r.set_idle(false);
     r.fill(&mut out);
     assert!(r.underruns() > before, "a real starve is no longer counted");
 }
 
-/// A ring that ran dry rebuilds its cushion before playing again. Handing over whatever
-/// fragments the producer has managed so far gives the device audio, silence, audio, silence
-/// for as long as the ramp lasts, and that alternation is the scratch heard when a game
-/// starts: the cart is loading while the opening cushion drains, and the core's first samples
-/// arrive in pieces too small to fill a period.
 #[test]
 fn a_ring_that_ran_dry_rebuilds_its_cushion_before_playing_again() {
     let r = Ring::new(ring_capacity(48_000));
@@ -232,8 +216,6 @@ fn a_ring_that_ran_dry_rebuilds_its_cushion_before_playing_again() {
     );
 }
 
-/// A cart sound has no producer behind it to build a cushion with. Holding one back would
-/// silence the shelf, where there is no core at all.
 #[test]
 fn a_cart_sound_is_not_held_back_by_the_cushion() {
     let r = Ring::new(ring_capacity(48_000));
@@ -245,4 +227,84 @@ fn a_cart_sound_is_not_held_back_by_the_cushion() {
         out.iter().any(|s| *s != 0),
         "the cart sound was swallowed by the cushion"
     );
+}
+
+#[test]
+fn a_rewinding_core_does_not_report_the_device_as_starved() {
+    let mut sink = StubSink::new();
+    sink.open(GBA_HZ, Profile::default()).expect("the stub refused to open");
+    let ring = sink.ring();
+    let emu = EmuHandle::spawn(
+        Box::new(MockCore::new()),
+        PathBuf::from("mock"),
+        ring.clone(),
+        None,
+        None,
+        Profile::default(),
+    );
+    emu.set_speed(Speed::Normal);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while emu.state() == CoreState::Loading {
+        assert!(Instant::now() < deadline, "the core never settled");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    for _ in 0..40 {
+        sink.device_drain();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    emu.set_rewinding(true);
+    std::thread::sleep(Duration::from_millis(60));
+    sink.device_drain();
+    let before = ring.underruns();
+    for _ in 0..10 {
+        sink.device_read(512);
+    }
+    assert_eq!(
+        ring.underruns(),
+        before,
+        "a rewind was reported as the device going hungry"
+    );
+}
+
+#[test]
+fn the_cushion_at_an_odd_capacity_still_ends_on_a_frame() {
+    assert_eq!(
+        ring_capacity(GBA_HZ) % 2,
+        1,
+        "this rate no longer has an odd capacity, so it no longer exercises the bug"
+    );
+    let r = Ring::new(ring_capacity(GBA_HZ));
+    r.reopen(GBA_HZ);
+
+    let mut cushion = vec![1i16; r.queued_frames() * 2];
+    r.fill(&mut cushion);
+    assert!(
+        cushion.iter().all(|s| *s == 0),
+        "the cushion was not silence"
+    );
+    let block: Vec<i16> = (0..64i16).flat_map(|k| [1000 + k, -1000 - k]).collect();
+    r.push(&block);
+    let mut out = vec![0i16; block.len()];
+    r.fill(&mut out);
+    assert_eq!(
+        out, block,
+        "the cushion ended mid frame, so left and right came back swapped"
+    );
+}
+
+#[test]
+fn silence_releases_the_device_only_after_three_quiet_seconds() {
+    let mut s = slot::audio::Silence::new(Duration::from_secs(3));
+    let period = Duration::from_millis(500);
+    let quiet = [0i16; 64];
+    for _ in 0..5 {
+        assert!(s.hear(&quiet, period));
+    }
+    assert!(!s.hear(&quiet, period), "still holding after 3s of silence");
+    assert!(
+        s.hear(&[0, 0, 3, 0], period),
+        "sound did not reclaim the device"
+    );
+    assert!(s.hear(&quiet, period), "one sound did not restart the wait");
 }

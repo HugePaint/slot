@@ -26,3 +26,6 @@
 /toolchain/
 /参考/
 /rustup-init.exe
+
+# Parallel implementation worktrees, never content.
+/.worktrees

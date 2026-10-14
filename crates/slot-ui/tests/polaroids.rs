@@ -14,7 +14,6 @@ fn entry(dir: &Path, stamp: &str) -> StateEntry {
     }
 }
 
-/// The entries do not matter to the top plate; the switcher just has to have some.
 fn switcher() -> Polaroids {
     Polaroids::new(Vec::new())
 }
@@ -53,8 +52,6 @@ fn relative_time_reads_off_the_stamp() {
     );
 }
 
-/// A save an hour old reads as an hour old whether or not the clock crossed midnight in
-/// between. On the calendar day alone this one is yesterday.
 #[test]
 fn an_hour_before_midnight_is_not_yesterday() {
     assert_eq!(
@@ -63,7 +60,6 @@ fn an_hour_before_midnight_is_not_yesterday() {
     );
 }
 
-/// The device clock can be behind the card, and a save from the future is still a save.
 #[test]
 fn a_stamp_ahead_of_the_clock_does_not_read_as_a_lifetime_ago() {
     assert_eq!(
@@ -72,8 +68,6 @@ fn a_stamp_ahead_of_the_clock_does_not_read_as_a_lifetime_ago() {
     );
 }
 
-/// A push cut between the thumbnail and the state leaves an entry with no picture. It still
-/// has to fill the screen, or the switcher shows the paused game through the hole.
 #[test]
 fn an_entry_whose_thumbnail_is_missing_still_has_a_face() {
     let face = photo_face(&entry(Path::new("/nonexistent"), "2026-08-09_14-32-05"));
@@ -84,8 +78,6 @@ fn an_entry_whose_thumbnail_is_missing_still_has_a_face() {
     );
 }
 
-/// The screenshot is the whole face now, so nothing is inset and nothing is cropped. A
-/// swapped pair of channels here would make every entry disagree with the game.
 #[test]
 fn the_photo_fills_the_face_and_keeps_its_colours() {
     let d = tempfile::tempdir().expect("tempdir");
@@ -101,8 +93,6 @@ fn the_photo_fills_the_face_and_keeps_its_colours() {
     }
 }
 
-/// The row is walked, not wrapped, and the ends hold. Wrapping would let a flick past the
-/// oldest land on the newest and load the wrong state.
 #[test]
 fn the_index_clamps_at_both_ends() {
     let d = Path::new("/nonexistent");
@@ -199,7 +189,6 @@ fn the_clock_stays_clear_of_the_title_on_the_left() {
     assert!(x + w < 180.0, "the clock reached into the title's texture");
 }
 
-/// The same degradation as the case band: no gauge, no capsule, and the clock still lands.
 #[test]
 fn a_switcher_with_no_gauge_still_shows_its_clock() {
     let p = switcher();
@@ -218,8 +207,6 @@ fn a_switcher_with_no_gauge_still_shows_its_clock() {
     );
 }
 
-/// The same invariant `draw_gauge` itself holds, checked one layer up through `Polaroids::draw`:
-/// a cable going in must not move or erase anything the gauge already drew, only add the bolt.
 #[test]
 fn nothing_on_the_plate_moves_when_the_charge_state_changes() {
     let p = switcher();

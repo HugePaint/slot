@@ -6,10 +6,9 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use slot::thumb;
 use slot_gfx::{lcd3x_mask, Compositor, Draw, HeadlessSurface, OUT_W, SRC_H, SRC_W};
 use slot_retro::{ButtonMask, MockCore, RetroCore};
-use slot_store::{Core, StateRing};
+use slot_store::{Core, Platform, StateRing};
 use slot_ui::{photo_face, Polaroids, Printed};
 
-/// `gl::load_with` writes global function pointers, so two GL tests must not overlap.
 static GL: Mutex<()> = Mutex::new(());
 
 fn compositor() -> Option<(MutexGuard<'static, ()>, HeadlessSurface, Compositor)> {
@@ -24,10 +23,6 @@ fn px(frame: &[u8], x: usize, y: usize) -> [u8; 3] {
     [frame[o], frame[o + 1], frame[o + 2]]
 }
 
-/// The switcher's photo item alone, with the plates left off so the picture can be read at
-/// every corner. Only the compositor can mint a `TexId`, so this is the first place the
-/// wiring is visible at all: a flat sprite here is the switcher looking like a different
-/// machine to the game behind it.
 fn switcher_photo(p: &Polaroids) -> Vec<Draw> {
     let mut out = Vec::new();
     p.draw(None, Printed::default(), None, Printed::default(), &mut out);
@@ -48,9 +43,6 @@ fn mock_frame(frames: u32) -> Vec<u8> {
     core.video_xrgb8888().to_vec()
 }
 
-/// The core hands over XRGB8888, which is B, G, R in memory. A channel swap anywhere in that
-/// path is invisible against the grey the mask test uses, so check it against a frame whose
-/// three channels genuinely differ.
 #[test]
 fn a_mock_frame_keeps_its_colours_through_the_game_pass() {
     let Some((_g, _s, mut c)) = compositor() else {
@@ -84,9 +76,6 @@ fn a_mock_frame_keeps_its_colours_through_the_game_pass() {
     );
 }
 
-/// The whole picture path in one pass: a core frame is PNG encoded on the save, decoded
-/// back into a screenshot, uploaded and drawn. A swapped channel or a stray rescale anywhere
-/// along it leaves the switcher showing something the game never showed.
 #[test]
 fn a_saved_frame_arrives_intact_on_its_screenshot() {
     let Some((_g, _s, mut c)) = compositor() else {
@@ -94,7 +83,7 @@ fn a_saved_frame_arrives_intact_on_its_screenshot() {
     };
     let src = mock_frame(13);
     let d = tempfile::tempdir().expect("tempdir");
-    let ring = StateRing::new(d.path(), Core::Mgba, "Mock");
+    let ring = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Mock");
     let stamp = "2026-08-09_14-32-05";
     ring.push(b"state", &thumb::png(&src, SRC_W, SRC_H).expect("encode"), stamp)
         .expect("push");
@@ -121,9 +110,6 @@ fn a_saved_frame_arrives_intact_on_its_screenshot() {
     }
 }
 
-/// Full screen is 3x, and 3x has to be the same integer scale the game runs at. A linear tap
-/// samples between texels there, which turns every edge in the frame into a two pixel ramp:
-/// the switcher would show a blurred copy of a frame the game drew sharp.
 #[test]
 fn the_switcher_magnifies_its_screenshot_without_resampling_it() {
     let Some((_g, _s, mut c)) = compositor() else {
@@ -131,7 +117,7 @@ fn the_switcher_magnifies_its_screenshot_without_resampling_it() {
     };
     let src = mock_frame(21);
     let d = tempfile::tempdir().expect("tempdir");
-    let ring = StateRing::new(d.path(), Core::Mgba, "Mock");
+    let ring = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Mock");
     ring.push(
         b"state",
         &thumb::png(&src, SRC_W, SRC_H).expect("encode"),

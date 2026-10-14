@@ -10,12 +10,15 @@
 > 修改由 [@RetroGame66](https://github.com/RetroGame66) 完成。
 
 A bespoke frontend for the Anbernic RG SP, covering the console's own Game Boy, Game Boy Color and
-Game Boy Advance libraries.
+Game Boy Advance libraries. The other devices upstream v1.6.0 runs on are under
+[Devices](#devices).
 
 Upstream's own README is kept **unmodified** beside this one, at
-[`README.upstream.md`](README.upstream.md). It is the project's documentation in its author's own
-words, and it is worth reading — but it describes *upstream*, not this fork. This file describes
-the fork: what it adds, what it changes, and what the buttons actually do here.
+[`README.upstream.md`](README.upstream.md). That file is the README from the commit this fork
+branched from, in its author's own words. It describes *upstream*, not this fork. As of v1.6.0
+the user guide is [slot-cfw.fyi](https://slot-cfw.fyi), and release notes are in
+[`CHANGELOG.md`](CHANGELOG.md). This file describes the fork: what it adds, what it changes, and
+what the buttons actually do here.
 
 ---
 
@@ -374,6 +377,8 @@ System/       the binary, both cores, and the settings listed below.
 Wallpapers/   .png, one picked at random each boot and drawn behind the shelf.
 ```
 
+ROMs in `Games/` must be unzipped. slot does not read `.zip` or `.7z`.
+
 Everything in `System/` other than the binary and the two cores is optional:
 
 ```
@@ -429,6 +434,27 @@ another's. Both cores ship in `System/`, so naming `gpsp` actually switches emul
 ```
 Emerald = gpsp
 ```
+
+## Devices
+
+The install steps below are written for the RG SP, which is what this fork is aimed at. Upstream
+v1.6.0 also runs on these:
+
+| Device             | Supported                  | Since version |
+|--------------------|----------------------------|---------------|
+| Anbernic RG SP     | Yes                        | Always        |
+| Anbernic RG34XX    | Yes                        | 1.4.0         |
+| Anbernic RG34XXSP  | Yes (No Stick Support Yet) | 1.4.0         |
+| Anbernic RG35XXSP  | Yes                        | 1.5.0         |
+| Anbernic 35XX Plus | Yes                        | 1.5.0         |
+| Anbernic RG28XX    | Yes                        | 1.6.0         |
+
+RG28XX support was contributed by [GamerAnim](https://github.com/GamerAnim). Its panel is mounted
+portrait, so slot turns the picture onto it. If it comes out upside down, add `export SLOT_ROTATE=ccw`
+to `System/launch_frontend.sh`.
+
+A device that is not in that list is upstream's to hear about, on
+[their issues](https://github.com/BrandonKowalski/slot/issues).
 
 ## Installing
 
@@ -640,4 +666,5 @@ exist without it. His README — the original documentation, including what is d
 this file (his release pipeline, his notes on the hardware, his own credits and disclosure) — is
 reproduced unmodified at [`README.upstream.md`](README.upstream.md).
 
-If you want `slot` itself, go to <https://github.com/BrandonKowalski/slot>.
+If you want `slot` itself, go to <https://github.com/BrandonKowalski/slot>. Its guide is
+<https://slot-cfw.fyi>.

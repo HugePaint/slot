@@ -1,26 +1,12 @@
 use std::path::Path;
 
-/// `System/theme.txt`: one `name #rrggbb` per line. A line whose first character is `#` is a
-/// comment; there are no trailing comments, because `#` is also how a colour is written and a
-/// mark that means two things is a mark that gets one of them wrong.
-///
-/// There is no settings screen, so this file is the whole of it. Anything unreadable,
-/// misspelt or malformed leaves that colour at its default and the rest of the file still
-/// applies: a card edited on a desktop must never be able to produce a device that will not
-/// boot.
 pub const THEME_FILE: &str = "theme.txt";
 
-/// The case around the slot, in the order they stack from the outside in. Only the bar for
-/// now; the names are what a theme file addresses, so they are part of the format.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct Theme {
-    /// The outer plastic.
     pub housing: [u8; 3],
-    /// The floor of the bay, stepped down from the shell.
     pub recess: [u8; 3],
-    /// The opening itself, and the inside of the thumb scoop.
     pub opening: [u8; 3],
-    /// The lit edge of the plastic: the top of the slot and the rim of the scoop.
     pub edge: [u8; 3],
 }
 
@@ -36,9 +22,8 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// Best effort. A missing file is the default theme, not an error.
     pub fn read(root: &Path) -> Self {
-        match std::fs::read_to_string(root.join("System").join(THEME_FILE)) {
+        match std::fs::read_to_string(root.join("Config").join(THEME_FILE)) {
             Ok(text) => Self::parse(&text),
             Err(_) => Theme::default(),
         }
@@ -55,8 +40,6 @@ impl Theme {
             let (Some(name), Some(value)) = (parts.next(), parts.next()) else {
                 continue;
             };
-            // A third word means the line was meant as something else. Guessing at it is how
-            // a typo silently becomes a colour nobody chose.
             if parts.next().is_some() {
                 continue;
             }
@@ -75,8 +58,6 @@ impl Theme {
     }
 }
 
-/// `rrggbb`, with or without the leading hash. Both are written in the wild and neither is
-/// worth refusing a card over.
 fn hex(value: &str) -> Option<[u8; 3]> {
     let digits = value.strip_prefix('#').unwrap_or(value);
     if digits.len() != 6 || !digits.chars().all(|c| c.is_ascii_hexdigit()) {

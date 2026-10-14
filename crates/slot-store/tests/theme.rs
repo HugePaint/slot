@@ -1,7 +1,5 @@
 use slot_store::Theme;
 
-/// The card is edited on a desktop by hand. Every way that can go wrong has to leave a device
-/// that still boots and a slot that is still visible.
 #[test]
 fn a_broken_line_leaves_that_colour_alone_and_the_rest_applies() {
     let t = Theme::parse(
@@ -22,8 +20,6 @@ fn a_broken_line_leaves_that_colour_alone_and_the_rest_applies() {
     assert_eq!(t.edge, d.edge, "a line with no value was taken anyway");
 }
 
-/// `#` opens a comment only at the start of a line, because it is also how a colour is
-/// written. Reading it both ways silently drops every colour in the file.
 #[test]
 fn a_leading_hash_is_a_comment_and_a_value_hash_is_not() {
     let t = Theme::parse("# housing #ffffff\nhousing #102030\n");
@@ -38,8 +34,6 @@ fn a_colour_reads_with_or_without_its_hash() {
     );
 }
 
-/// Trailing junk means the line was meant as something else. Taking the first two words of it
-/// turns a typo into a colour nobody chose.
 #[test]
 fn a_line_with_more_than_a_name_and_a_value_is_ignored() {
     assert_eq!(
@@ -48,7 +42,6 @@ fn a_line_with_more_than_a_name_and_a_value_is_ignored() {
     );
 }
 
-/// A card with no theme is the common case, not an error.
 #[test]
 fn a_missing_file_is_the_default_theme() {
     let d = tempfile::tempdir().unwrap();

@@ -1,5 +1,3 @@
-//! Raw libretro ABI. Nothing here knows what a GBA is.
-
 use std::ffi::{c_char, c_int, c_uint, c_void};
 
 use libloading::Library;
@@ -8,6 +6,7 @@ use crate::core::CoreError;
 
 pub const API_VERSION: c_uint = 1;
 
+pub const GET_CAN_DUPE: c_uint = 3;
 pub const GET_SYSTEM_DIRECTORY: c_uint = 9;
 pub const SET_PIXEL_FORMAT: c_uint = 10;
 pub const GET_VARIABLE: c_uint = 15;
@@ -16,6 +15,7 @@ pub const GET_VARIABLE_UPDATE: c_uint = 17;
 pub const GET_RUMBLE_INTERFACE: c_uint = 23;
 pub const GET_LOG_INTERFACE: c_uint = 27;
 pub const GET_SAVE_DIRECTORY: c_uint = 31;
+pub const SET_AUDIO_BUFFER_STATUS_CALLBACK: c_uint = 62;
 pub const SET_NETPACKET_INTERFACE: c_uint = 78;
 
 pub const RUMBLE_STRONG: c_uint = 0;
@@ -25,14 +25,13 @@ pub const PIXEL_FORMAT_XRGB8888: c_uint = 1;
 pub const PIXEL_FORMAT_RGB565: c_uint = 2;
 pub const DEVICE_JOYPAD: c_uint = 1;
 pub const MEMORY_SAVE_RAM: c_uint = 0;
-/// `RETRO_DEVICE_ID_JOYPAD_MASK`, a query for every button at once.
+pub const MEMORY_RTC: c_uint = 1;
 pub const JOYPAD_MASK: c_uint = 256;
 
 pub const NETPACKET_UNRELIABLE: i32 = 0;
 pub const NETPACKET_RELIABLE: i32 = 1 << 0;
 pub const NETPACKET_UNSEQUENCED: i32 = 1 << 1;
 pub const NETPACKET_FLUSH_HINT: i32 = 1 << 2;
-/// Not a flag: passed as `client_id` to address every connected peer at once.
 pub const NETPACKET_BROADCAST: u16 = 0xFFFF;
 
 #[repr(C)]
@@ -85,8 +84,14 @@ pub struct RumbleInterface {
     pub set_rumble_state: SetRumbleStateFn,
 }
 
-// The core hands these two to `start` so the frontend can push and pull packets on its own
-// schedule; the frontend never calls them itself outside of that.
+pub type AudioBufferStatusFn =
+    unsafe extern "C" fn(active: bool, occupancy: c_uint, underrun_likely: bool);
+
+#[repr(C)]
+pub struct AudioBufferStatusCallback {
+    pub callback: Option<AudioBufferStatusFn>,
+}
+
 pub type NetpacketSend =
     unsafe extern "C" fn(flags: c_int, buf: *const c_void, len: usize, client_id: u16);
 pub type NetpacketPollReceive = unsafe extern "C" fn();
@@ -99,19 +104,6 @@ pub type NetpacketPoll = unsafe extern "C" fn();
 pub type NetpacketConnected = unsafe extern "C" fn(client_id: u16) -> bool;
 pub type NetpacketDisconnected = unsafe extern "C" fn(client_id: u16);
 
-/// `start` and `receive` are the only fields libretro guarantees a core will fill in.
-/// Everything from `stop` onward is documented optional and arrives NULL from some cores, so
-/// each is an `Option` and every call site has to check before dereferencing it.
-///
-/// `start`, `stop`, `connected`, `disconnected` and `protocol_version` are read as a group —
-/// stored whole by the `SET_NETPACKET_INTERFACE` environment arm. `start` is called through
-/// once a session actually begins (`RetroCore::start_link`, behind `begin_link`), and `stop`
-/// once one ends (`RetroCore::stop_link`, behind `halt_link`) — the two are now a matched
-/// pair. `connected` and `disconnected` are called through the same way, right beside `start`
-/// and `stop` respectively (`begin_link`/`halt_link` again): `connected` answers gpSP's own
-/// serial IRQ timing, which counts connected peers, and `disconnected` tells the core the one
-/// peer this product ever has has left. Neither means anything richer than that — there is
-/// still only "there is a peer or there is not" — but both are on the wire now, not stubs.
 #[repr(C)]
 pub struct NetpacketCallback {
     pub start: Option<NetpacketStart>,
@@ -123,12 +115,7 @@ pub struct NetpacketCallback {
     pub protocol_version: *const c_char,
 }
 
-// Every field here is either a C function pointer (already `Send`) or `protocol_version`, a
-// pointer at a string literal owned by the dylib itself — fixed for the life of the load,
-// never written by this crate, and no more thread-bound than the function pointers beside
-// it. `Host` moves to the emulator's own thread with the rest of `LibretroCore`, and this
-// struct has to move with it: without this, the raw pointer would make the whole of `Host`
-// `!Send` and `LibretroCore` would fail `RetroCore: Send`.
+// SAFETY: besides function pointers, `protocol_version` points at a string literal in the
 unsafe impl Send for NetpacketCallback {}
 
 pub type EnvironmentFn = unsafe extern "C" fn(c_uint, *mut c_void) -> bool;
@@ -169,8 +156,6 @@ pub struct Api {
 }
 
 impl Api {
-    /// # Safety
-    /// `lib` must be a libretro core built for this platform.
     pub unsafe fn load(lib: &Library) -> Result<Self, CoreError> {
         macro_rules! get {
             ($name:literal) => {

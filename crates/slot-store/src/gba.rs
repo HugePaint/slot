@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read, Seek};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 /// GBA cartridge header: a 12 byte ASCII game title, NUL padded on the right.
@@ -73,12 +73,38 @@ pub fn sgb_enhanced(rom: &Path) -> bool {
     };
     // Seek to the flag and read it; `read` returns short on a rom shorter than 0x147 bytes,
     // leaving the buffer zeroed — the not-enhanced answer, not a panic on a truncated file.
-    if file.seek(std::io::SeekFrom::Start(SGB_FLAG_OFF as u64)).is_err() {
+    if file.seek(SeekFrom::Start(SGB_FLAG_OFF as u64)).is_err() {
         return false;
     }
     let mut flag = [0u8; 1];
     let n = file.read(&mut flag).unwrap_or(0);
     n == 1 && flag[0] == 0x03
+}
+
+pub fn header_title_code(rom: &Path) -> Option<(String, String)> {
+    let mut f = File::open(rom).ok()?;
+    f.seek(SeekFrom::Start(TITLE_OFF as u64)).ok()?;
+    let mut head = [0u8; (CODE_OFF - TITLE_OFF) + CODE_LEN];
+    f.read_exact(&mut head).ok()?;
+    let (title, code) = head.split_at(TITLE_LEN);
+    Some((
+        text_from_bytes(title).unwrap_or_default(),
+        text_from_bytes(code).unwrap_or_default(),
+    ))
+}
+
+pub fn header_clean(rom: &Path) -> bool {
+    let Ok(mut f) = File::open(rom) else {
+        return false;
+    };
+    let Ok(meta) = f.metadata() else {
+        return false;
+    };
+    let mut head = [0u8; 0xB3];
+    f.read_exact(&mut head).is_ok()
+        && head[3] == 0xEA
+        && head[0xB2] == 0x96
+        && meta.len() <= 16 * 1024 * 1024
 }
 
 fn field_at(buf: &[u8], off: usize, len: usize) -> Option<String> {
@@ -93,7 +119,7 @@ fn text_from_bytes(buf: &[u8]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{header, sgb_enhanced, text_from_bytes};
+    use super::{header, header_clean, header_title_code, sgb_enhanced, text_from_bytes};
     use std::io::Write;
 
     #[test]
@@ -123,6 +149,10 @@ mod tests {
             header(&rom),
             ("POKEMON EMER".to_string(), "BPEE".to_string())
         );
+        assert_eq!(
+            header_title_code(&rom),
+            Some(("POKEMON EMER".into(), "BPEE".into()))
+        );
     }
 
     #[test]
@@ -131,6 +161,7 @@ mod tests {
         let rom = dir.path().join("Tiny.gba");
         std::fs::write(&rom, [0u8; 8]).unwrap();
         assert_eq!(header(&rom), (String::new(), String::new()));
+        assert_eq!(header_title_code(&rom), None);
     }
 
     #[test]
@@ -140,6 +171,22 @@ mod tests {
             header(&dir.path().join("nope.gba")),
             (String::new(), String::new())
         );
+    }
+
+    #[test]
+    fn a_clean_header_is_the_logo_byte_and_a_rom_no_larger_than_sixteen_megabytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let rom = dir.path().join("Clean.gba");
+        let mut bytes = vec![0u8; 0x100];
+        bytes[3] = 0xEA;
+        bytes[0xB2] = 0x96;
+        std::fs::write(&rom, &bytes).unwrap();
+        assert!(header_clean(&rom));
+        bytes[3] = 0;
+        let dirty = dir.path().join("Dirty.gba");
+        std::fs::write(&dirty, &bytes).unwrap();
+        assert!(!header_clean(&dirty));
+        assert!(!header_clean(&dir.path().join("missing.gba")));
     }
 
     #[test]

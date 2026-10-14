@@ -2,10 +2,6 @@ use crate::surface::{GfxError, Surface};
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Whether the context this process loaded is GLES rather than desktop GL. The two disagree
-/// on two things the tree uses: sized internal formats, and whether a draw needs a vertex
-/// array object. Read from the driver rather than from a build feature, so a host build
-/// pointed at a GLES context still draws.
 static ES: AtomicBool = AtomicBool::new(false);
 
 pub fn load(surface: &dyn Surface) {
@@ -22,12 +18,27 @@ pub fn es() -> bool {
     ES.load(Ordering::Relaxed)
 }
 
-/// ES 2.0 has no sized internal formats: the internal format has to be spelled exactly as
-/// the data's, and `RGBA8` is a hard error rather than a hint it ignores.
-pub fn internal_format(format: gl::types::GLenum) -> gl::types::GLint {
+const LUMINANCE: gl::types::GLenum = 0x1909;
+
+pub fn gray_format() -> gl::types::GLenum {
     match es() {
-        true => format as gl::types::GLint,
-        false => gl::RGBA8 as gl::types::GLint,
+        true => LUMINANCE,
+        false => gl::RED,
+    }
+}
+
+pub fn internal_format(format: gl::types::GLenum) -> gl::types::GLint {
+    match (es(), format) {
+        (true, _) => format as gl::types::GLint,
+        (false, gl::RED) => gl::R8 as gl::types::GLint,
+        (false, _) => gl::RGBA8 as gl::types::GLint,
+    }
+}
+
+fn bytes_per_pixel(format: gl::types::GLenum) -> u32 {
+    match format {
+        gl::RED | LUMINANCE => 1,
+        _ => 4,
     }
 }
 
@@ -67,7 +78,6 @@ pub fn program(vert: &str, frag: &str) -> Result<gl::types::GLuint, GfxError> {
             gl::BindAttribLocation(p, crate::quad::POS_LOCATION, pos.as_ptr());
         }
         gl::LinkProgram(p);
-        // Shaders stay alive until the program is linked, then the program owns the code.
         gl::DeleteShader(vs);
         gl::DeleteShader(fs);
         let mut ok = 0;
@@ -109,8 +119,6 @@ unsafe fn info_log(
     String::from_utf8_lossy(&buf).into_owned()
 }
 
-/// An RGBA8 texture. `format` is the layout of `data`, which the GBA frame needs because
-/// libretro hands over XRGB8888, little endian, so its bytes arrive B, G, R, X.
 pub fn texture(
     w: u32,
     h: u32,
@@ -120,7 +128,9 @@ pub fn texture(
     data: Option<&[u8]>,
 ) -> gl::types::GLuint {
     let pixels = match data {
-        Some(d) if d.len() >= (w * h * 4) as usize => d.as_ptr() as *const std::ffi::c_void,
+        Some(d) if d.len() >= (w * h * bytes_per_pixel(format)) as usize => {
+            d.as_ptr() as *const std::ffi::c_void
+        }
         _ => std::ptr::null(),
     };
     unsafe {

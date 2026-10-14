@@ -1,12 +1,3 @@
-//! Composes the about screen exactly as `Phase::About` does — backdrop, then label — and
-//! rasterises it to a PNG, so what the ground does behind the label can be looked at rather
-//! than asserted about.
-//!
-//! Does nothing unless `SCRATCH_PNG` names an output file. `SCRATCH_WALL` puts a wallpaper
-//! behind the label:
-//!
-//! `SCRATCH_PNG=/tmp/about.png cargo test -p slot-ui --test render_about -- --nocapture`
-
 use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
 use slot_ui::{draw_backdrop, draw_sticker, sticker_face, wallpaper_face, StickerFields};
 
@@ -24,7 +15,6 @@ fn render_about() {
         dirty_digit: '0',
     });
 
-    // The two calls the About arm makes, in order.
     let mut list = Vec::new();
     draw_backdrop(paper.as_ref().map(|_| TexId::from_raw(0)), &mut list);
     draw_sticker(Some(TexId::from_raw(1)), &mut list);
@@ -68,7 +58,6 @@ fn render_about() {
                 tex,
                 alpha,
             } => {
-                // 0 is the wallpaper, 1 the label — the order they were pushed in.
                 let (src, sw, sh) = match tex == TexId::from_raw(0) {
                     true => (paper.as_deref().unwrap_or(&[]), OUT_W, OUT_H),
                     false => (label.rgba.as_slice(), label.w, label.h),

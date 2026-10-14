@@ -1,25 +1,23 @@
 use std::path::{Path, PathBuf};
 
-use crate::atomic::atomic_write;
+use crate::atomic::{atomic_write, sync_dir};
 use crate::core::Core;
+use crate::platform::Platform;
 
 pub const RING_MAX: usize = 10;
 
 const STATE_EXT: &str = "state";
 const THUMB_EXT: &str = "png";
 const RESUME: &str = "resume";
+const REFUSED: &str = "resume-refused";
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct StateEntry {
-    /// `%Y-%m-%d_%H-%M-%S`, and also the filename. There is no manifest to corrupt.
     pub stamp: String,
     pub state: PathBuf,
     pub thumb: PathBuf,
 }
 
-/// The ten deliberate saves for one cart, plus the invisible `resume.state` alongside
-/// them. Only `SELECT+R1` pushes; eject, lid, power and autosave all write resume, which
-/// is why resume is not an entry.
 pub struct StateRing {
     dir: PathBuf,
 }
@@ -28,7 +26,21 @@ impl StateRing {
     /// States are core private: a serialized machine from one emulator cannot be loaded by
     /// another, so offering them together would only produce a confusing failure. Battery
     /// saves under `Saves/` are raw cartridge bytes and stay shared.
-    pub fn new(root: &Path, core: Core, system: crate::System, stem: &str) -> Self {
+    ///
+    /// Laid out `States/<platform>/<core>/<stem>`, which is the directory a current card writes.
+    pub fn new(root: &Path, platform: Platform, core: Core, stem: &str) -> Self {
+        StateRing {
+            dir: root
+                .join("States")
+                .join(platform.dir_name())
+                .join(core.as_str())
+                .join(stem),
+        }
+    }
+
+    /// The same ring filed as `States/<core>/<system>/<stem>`. Read when a card was sorted by
+    /// core before the platform directory moved in front of it.
+    pub fn for_system(root: &Path, core: Core, system: crate::System, stem: &str) -> Self {
         StateRing {
             dir: root
                 .join("States")
@@ -48,15 +60,11 @@ impl StateRing {
 
     pub fn push(&self, state: &[u8], thumb_png: &[u8], stamp: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
-        // Thumb first. An entry is listed by its state file, so a cut between the two
-        // leaves an unlisted orphan rather than a polaroid with no picture.
         atomic_write(&self.path(stamp, THUMB_EXT), thumb_png)?;
         atomic_write(&self.path(stamp, STATE_EXT), state)?;
         self.evict()
     }
 
-    /// Newest first. A cart that has never been saved lists empty rather than failing:
-    /// on the device that directory only exists once something has written to it.
     pub fn list(&self) -> std::io::Result<Vec<StateEntry>> {
         let dir = match std::fs::read_dir(&self.dir) {
             Ok(d) => d,
@@ -82,14 +90,10 @@ impl StateRing {
                 stamp: stamp.to_string(),
             });
         }
-        // The stamp is fixed width and most significant first, so lexicographic order is
-        // chronological order.
         entries.sort_by(|a, b| b.stamp.cmp(&a.stamp));
         Ok(entries)
     }
 
-    /// Both halves of one entry. A thumbnail that never landed reads as empty rather than as
-    /// a failure: the state is the part worth keeping.
     pub fn read(&self, stamp: &str) -> std::io::Result<(Vec<u8>, Vec<u8>)> {
         let state = std::fs::read(self.stamped(stamp, STATE_EXT)?)?;
         let thumb = std::fs::read(self.path(stamp, THUMB_EXT)).unwrap_or_default();
@@ -115,11 +119,32 @@ impl StateRing {
         }
     }
 
+    pub fn retire_resume(&self, stamp: &str) -> std::io::Result<Option<PathBuf>> {
+        let from = self.path(RESUME, STATE_EXT);
+        if !from.exists() {
+            return Ok(None);
+        }
+        let to = self.free_refused(stamp);
+        std::fs::rename(&from, &to)?;
+        sync_dir(&to);
+        Ok(Some(to))
+    }
+
+    fn free_refused(&self, stamp: &str) -> PathBuf {
+        let base = format!("{REFUSED}-{stamp}");
+        let first = self.path(&base, STATE_EXT);
+        if !first.exists() {
+            return first;
+        }
+        (2u32..)
+            .map(|n| self.path(&format!("{base}-{n}"), STATE_EXT))
+            .find(|p| !p.exists())
+            .unwrap_or(first)
+    }
+
     fn evict(&self) -> std::io::Result<()> {
         for old in self.list()?.into_iter().skip(RING_MAX) {
             std::fs::remove_file(&old.state)?;
-            // A push that was cut short can leave a state with no thumb, and refusing to
-            // evict it would wedge the ring at eleven.
             let _ = std::fs::remove_file(&old.thumb);
         }
         Ok(())
@@ -129,8 +154,6 @@ impl StateRing {
         self.dir.join(format!("{stem}.{ext}"))
     }
 
-    /// The caller names the file, so `resume` and anything else outside the ring is refused
-    /// here rather than being deleted or handed back.
     fn stamped(&self, stamp: &str, ext: &str) -> std::io::Result<PathBuf> {
         if !is_stamp(stamp) {
             return Err(std::io::Error::new(
@@ -142,9 +165,6 @@ impl StateRing {
     }
 }
 
-/// `resume.state` fails this, and so does anything the user dropped in the directory by
-/// hand. Eviction deletes what `list` returns, so being strict here is what stops the
-/// ring removing a file it did not write.
 fn is_stamp(s: &str) -> bool {
     const SHAPE: &[u8] = b"0000-00-00_00-00-00";
     s.len() == SHAPE.len()

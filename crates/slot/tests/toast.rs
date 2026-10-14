@@ -12,7 +12,6 @@ fn a_save_hotkey_says_state_saved() {
     assert_eq!(a.toast(), Some(Toast::StateSaved));
 }
 
-/// One line for both would tell you something happened and not which.
 #[test]
 fn a_load_says_state_loaded() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -22,7 +21,6 @@ fn a_load_says_state_loaded() {
     assert_eq!(a.toast(), Some(Toast::StateLoaded));
 }
 
-/// A load that could not happen must not claim it did.
 #[test]
 fn a_refused_load_says_nothing() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -32,7 +30,6 @@ fn a_refused_load_says_nothing() {
     assert!(a.refusal_active(a.now()), "and it did not shake either");
 }
 
-/// It says so and then leaves. A line that stayed would be a status bar.
 #[test]
 fn a_toast_goes_away_on_its_own() {
     let d = tmp_root_with_carts(&["Emerald"]);

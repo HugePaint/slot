@@ -13,12 +13,12 @@ fn levels_clamp_and_persist() {
     for _ in 0..20 {
         a.apply(Action::BrightnessUp);
     }
-    // Against the scale's own top rather than a number: the ramp is what it is, and this is
-    // where it stops.
+    a.flush_state();
     assert_eq!(read_slot_state(d.path()).brightness, BRIGHTNESS_MAX);
     for _ in 0..20 {
         a.apply(Action::BrightnessDown);
     }
+    a.flush_state();
     assert_eq!(read_slot_state(d.path()).brightness, 0);
 }
 
@@ -27,10 +27,12 @@ fn volume_moves_five_per_press() {
     let d = tmp_root_with_carts(&["Emerald"]);
     let mut a = boot(d.path());
     a.apply(Action::VolumeUp);
+    a.flush_state();
     assert_eq!(read_slot_state(d.path()).volume, 65);
     for _ in 0..20 {
         a.apply(Action::VolumeDown);
     }
+    a.flush_state();
     assert_eq!(read_slot_state(d.path()).volume, 0);
 }
 
@@ -40,17 +42,17 @@ fn levels_work_on_the_shelf_not_only_in_game() {
     let mut a = boot(d.path());
     assert!(matches!(a.phase(), Phase::Shelf));
     a.apply(Action::BlueLightUp);
+    a.flush_state();
     assert_eq!(read_slot_state(d.path()).blue_light, 1);
 }
 
-/// The bar is transient chrome over a live game, per spec section 6. Anything that moved
-/// the phase would have paused it.
 #[test]
 fn adjusting_a_level_in_game_leaves_the_game_running() {
     let d = tmp_root_with_carts(&["Emerald"]);
     let mut a = app_playing_in(d.path(), "Emerald");
     a.apply(Action::VolumeDown);
     assert!(matches!(a.phase(), Phase::Playing { .. }));
+    a.flush_state();
     assert_eq!(read_slot_state(d.path()).volume, 55);
 }
 
@@ -78,7 +80,6 @@ fn muted_is_silent_but_remembers() {
     assert_eq!(a.hud_icon(), Icon::VolumeMuted);
 }
 
-/// Turning it up is the obvious way to undo a mute, and it should work.
 #[test]
 fn adjusting_the_volume_unmutes() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -89,8 +90,6 @@ fn adjusting_the_volume_unmutes() {
     assert_eq!(a.volume(), 75);
 }
 
-/// The chord is one press away from the level keys, so unmuting has to give back the silence
-/// as well as the number. Without it the second half of the pair would leave it audible.
 #[test]
 fn unmuting_with_the_chord_does_not_mute_again() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -103,7 +102,6 @@ fn unmuting_with_the_chord_does_not_mute_again() {
     assert_eq!(a.volume(), 70);
 }
 
-/// A device muted at bedtime is still muted in the morning.
 #[test]
 fn the_mute_survives_a_reboot() {
     let d = tmp_root_with_carts(&["Emerald"]);

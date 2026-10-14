@@ -1,7 +1,3 @@
-//! Shader sources are GLSL ES 1.00 so the device build compiles them unchanged. Only the
-//! preamble differs: the device supplies `precision` defaults and
-//! `#define FRAG_COLOR gl_FragColor`, the host maps the ES names onto GL 3.3 core.
-
 use crate::surface::GfxError;
 
 const VERT_PREAMBLE: &str = "#version 330 core\n#define attribute in\n#define varying out\n";
@@ -9,9 +5,6 @@ const VERT_PREAMBLE: &str = "#version 330 core\n#define attribute in\n#define va
 const FRAG_PREAMBLE: &str = "#version 330 core\n#define varying in\n\
                              #define texture2D texture\nout vec4 FRAG_COLOR;\n";
 
-/// ES 1.00 is the language these are written in, so the device adds nothing but the name of
-/// the output. A `#version` line is omitted rather than set: 100 is the default, and the
-/// drivers that reject `#version 100` outnumber the ones that require it.
 const VERT_PREAMBLE_ES: &str = "";
 const FRAG_PREAMBLE_ES: &str = "#define FRAG_COLOR gl_FragColor\n";
 
@@ -23,9 +16,6 @@ pub fn program(vert: &str, frag: &str) -> Result<gl::types::GLuint, GfxError> {
     crate::gl::program(&format!("{vp}{vert}"), &format!("{fp}{frag}"))
 }
 
-/// Unit quad to a rect in target pixels, origin top left. The y flip lives here, so every
-/// pass drawing into the offscreen target thinks in screen coordinates and only the blit
-/// deals with the framebuffer being stored bottom up.
 pub const RECT_VERT: &str = r#"
 attribute vec2 a_pos;
 uniform vec4 u_rect;
@@ -38,12 +28,6 @@ void main() {
 }
 "#;
 
-/// `RECT_VERT` for sprites, turned about the rect's centre by `u_turn`, which holds the cosine
-/// and sine of the angle. The corner is placed exactly as `RECT_VERT` places it, plus the
-/// difference between the corner turned and unturned; the sprite loop passes exactly (1, 0)
-/// for anything that is not turned, which makes that difference exactly zero. A shader of its
-/// own rather than a change to `RECT_VERT`, because the game pass links that one too and would
-/// read an unset `u_turn` as (0, 0).
 pub const SPRITE_VERT: &str = r#"
 attribute vec2 a_pos;
 uniform vec4 u_rect;
@@ -61,14 +45,23 @@ void main() {
 }
 "#;
 
-/// `u_src` is the source size in pixels, which is also the number of times the 3x3 mask
-/// tiles across the target: one RGB triad per source pixel, exactly.
 pub const GAME_FRAG: &str = r#"
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
 precision mediump float;
+#endif
 uniform sampler2D u_game;
+uniform sampler2D u_paper;
 uniform sampler2D u_mask;
 uniform vec2 u_src;
+uniform vec4 u_uv;
 uniform float u_bright;
+uniform float u_mode;
+uniform float u_paper_size;
+uniform vec4 u_rect;
+uniform vec2 u_fbo;
+uniform vec4 u_pic;
 uniform mat3 u_cc;
 // 色彩校正的黑点：在矩阵之后加上去（同一空间）。饱和度/单色背光那一类用不上它（恒 0），
 // 但**实机色板用得上**——DMG 最亮档不是白、最暗档也不是黑（#B8F878 到 #102000），
@@ -100,6 +93,14 @@ uniform float u_grid_scan;
 // 「半彩」压暗、把单色背光冲淡。
 uniform float u_cc_gamma;
 varying vec2 v_uv;
+const vec3 offsets = vec3(3.141592654) * vec3(1.0 / 2.0, 1.0 / 2.0 - 2.0 / 3.0, 1.0 / 2.0 - 4.0 / 3.0);
+const vec3 luma_coeff = vec3(0.2126, 0.7152, 0.0722);
+vec2 grid_band(vec2 x) {
+    return floor(x) / 3.0 + min(fract(x), vec2(1.0 / 3.0));
+}
+float dot_weight(vec2 f, vec2 o, float bloom) {
+    return exp(-4.0 * length(f - (o + vec2(0.5))) * bloom);
+}
 // 4×4 有序抖动（Bayer）。两次 2×2 用算术叠出来，避开 GLSL ES 1.00 没有的位运算与数组索引。
 float Bayer2(vec2 a) {
     vec2 f = floor(a);
@@ -109,14 +110,16 @@ float Bayer4(vec2 a) {
     return Bayer2(a * 0.5) * 0.25 + Bayer2(a);
 }
 void main() {
-    vec3 c = texture2D(u_game, v_uv).rgb;
+    vec2 uv = u_uv.xy + v_uv * u_uv.zw;
+    vec2 f = fract(uv * u_src);
+    vec3 c = texture2D(u_game, uv).rgb;
     if (u_pix_on > 0.5) {
         // 抖动 ±半个 5-bit 步，再吸附到 32 级（floor+0.5 即四舍五入），最后查表。
         float bayer = Bayer4(floor(gl_FragCoord.xy)) - 0.5;
         vec3 q = clamp(c + bayer / 31.0, 0.0, 1.0);
         vec3 lv = floor(q * 31.0 + 0.5);
-        vec2 uv = vec2((lv.x + 32.0 * lv.y + 0.5) / 1024.0, (lv.z + 0.5) / 32.0);
-        c = texture2D(u_pix, uv).rgb;
+        vec2 pix_uv = vec2((lv.x + 32.0 * lv.y + 0.5) / 1024.0, (lv.z + 0.5) / 32.0);
+        c = texture2D(u_pix, pix_uv).rgb;
     } else if (u_pal_on > 0.5) {
         // 画面是四阶灰，色板按灰阶取色。表在 CPU 上就按四档插好了（含中间过渡，反射那边
         // 拿到的是模糊过的连续值），这里一次 NEAREST 取样 —— 比两次 pow + 九次乘加便宜，
@@ -128,8 +131,43 @@ void main() {
         c = u_cc * c + u_cc_bias;
         c = pow(max(c, vec3(0.0)), vec3(1.0 / u_cc_gamma));
     }
+    bool inside = all(greaterThanEqual(uv, u_pic.xy)) && all(lessThan(uv, u_pic.zw));
+    if (!inside) {
+    } else if (u_mode > 3.5) {
+        c = pow(c, vec3(1.05));
+        vec2 d = abs(f - 0.5);
+        float x2 = max(d.x, d.y);
+        x2 = x2 * x2;
+        float x4 = x2 * x2;
+        float w = 48.0 * (x4 - (8.0 / 3.0) * x4 * x2);
+        w = w * (w + (1.0 - w) * 0.65) * 0.65;
+        float luma = dot(c, luma_coeff);
+        w = w * luma;
+        c = mix(c, vec3(1.0), w);
+        vec3 bg = vec3(texture2D(u_paper, (floor(gl_FragCoord.xy) + 0.5) / u_paper_size).r) * c;
+        c = mix(c, bg, dot(c, luma_coeff));
+    } else if (u_mode > 2.5) {
+        float bloom = mix(1.05, 0.95, dot(c, vec3(0.30, 0.59, 0.11)));
+        float mid = dot_weight(f, vec2(0.0), bloom);
+        float sum = 0.0;
+        for (int j = -1; j <= 1; j++) {
+            for (int i = -1; i <= 1; i++) {
+                sum += dot_weight(f, vec2(float(i), float(j)), bloom);
+            }
+        }
+        c = mix(c, mix(1.2 * c * mid, c * sum, 0.85), 0.85);
+    } else if (u_mode > 1.5) {
+        vec2 hp = 0.5 * u_uv.zw * u_src / (u_rect.zw * u_fbo);
+        vec2 edge = (grid_band(f + hp) - grid_band(f - hp)) / (2.0 * hp);
+        c *= 1.0 - 0.75 * max(edge.x, edge.y);
+    } else if (u_mode > 0.5) {
+        vec2 angle = f * 6.283185307;
+        float yfactor = (16.0 + sin(angle.y)) / 17.0;
+        vec3 xfactors = (4.0 + sin(angle.x + offsets)) / 5.0;
+        c *= yfactor * xfactors;
+    }
     if (u_grid_mix > 0.0) {
-        vec2 sub = fract(v_uv * u_src);
+        vec2 sub = fract(uv * u_src);
         // The mesh is the right column and the bottom row of every 3x3 source pixel (5 of its 9,
         // overlap counted once); a scanline is the bottom row alone — the same lit wire every
         // third game pixel, which is what a panel's row gap looks like.
@@ -139,7 +177,7 @@ void main() {
         }
     }
     // 面板遮罩照旧在编码空间乘（顺序与旧版等价：矩阵与遮罩都是乘法，可交换）。
-    vec3 rgb = c * texture2D(u_mask, v_uv * u_src).rgb;
+    vec3 rgb = c * texture2D(u_mask, uv * u_src).rgb;
     FRAG_COLOR = vec4(rgb * u_bright, 1.0);
 }
 "#;
@@ -262,9 +300,22 @@ void main() {
 
 pub const BLIT_VERT: &str = r#"
 attribute vec2 a_pos;
+uniform vec4 u_uv;
 varying vec2 v_uv;
 void main() {
-    v_uv = a_pos;
+    v_uv = u_uv.xy + a_pos * u_uv.zw;
+    gl_Position = vec4(a_pos * 2.0 - 1.0, 0.0, 1.0);
+}
+"#;
+
+pub const TURN_VERT: &str = r#"
+attribute vec2 a_pos;
+uniform float u_ccw;
+varying vec2 v_uv;
+void main() {
+    vec2 cw = vec2(1.0 - a_pos.y, a_pos.x);
+    vec2 ccw = vec2(a_pos.y, 1.0 - a_pos.x);
+    v_uv = mix(cw, ccw, u_ccw);
     gl_Position = vec4(a_pos * 2.0 - 1.0, 0.0, 1.0);
 }
 "#;
@@ -276,5 +327,17 @@ uniform vec3 u_gain;
 varying vec2 v_uv;
 void main() {
     FRAG_COLOR = vec4(texture2D(u_tex, v_uv).rgb * u_gain, 1.0);
+}
+"#;
+
+pub const BEZEL_FRAG: &str = r#"
+precision mediump float;
+uniform sampler2D u_tex;
+uniform vec3 u_gain;
+uniform float u_alpha;
+varying vec2 v_uv;
+void main() {
+    vec4 c = texture2D(u_tex, v_uv);
+    FRAG_COLOR = vec4(c.rgb * u_gain, c.a * u_alpha);
 }
 "#;

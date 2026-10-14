@@ -1,23 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use slot_retro::{LibretroCore, MockCore, RetroCore};
-use slot_store::Core;
+use slot_store::{Core, GbPalette, Platform};
 
 use crate::root;
 
-/// Names the dylib outright, for a build that keeps it somewhere the search does not look.
-///
-/// This wins over `System/selected_core.ini` for which dylib loads — it stays a developer
-/// escape hatch, not a second way to pick a core. It is not silent about that: it does not
-/// touch which `Core` a cart resolves to (still the ini, still what the state directory
-/// under `States/<core>/` is named after), only which file `open_core` opens. Pointing this
-/// at gpSP for a cart the ini never mentions runs gpSP with its states filed under
-/// `States/mgba/` — correct for a developer who set the override on purpose, a trap for
-/// anyone who forgot it was set.
 const CORE_ENV: &str = "SLOT_CORE";
 
-/// Which dylib backs a core. The device keeps both in `System/`, so this is a filename
-/// rather than a search: whichever the cart asked for is either there or it is not.
 pub fn dylib_name(core: Core) -> String {
     format!(
         "{}_libretro.{}",
@@ -26,18 +15,10 @@ pub fn dylib_name(core: Core) -> String {
     )
 }
 
-/// Most specific first: the environment, then the content root's own `System/` — where the
-/// device actually keeps a core, and, on the device, also where the binary itself lives, so
-/// the next candidate coincides with this one there. Off the device — a host build, or a
-/// test with its own tmp root — the binary's directory and `root` are different places, and
-/// only searching the root's own `System/` gives a cart's own content root somewhere a test
-/// can plant a dylib under. The `vendor` directory `scripts/fetch-core.sh` writes into is
-/// last: a host development convenience, not anywhere a shipped device looks.
 fn candidates(root: &Path, core: Core) -> Vec<PathBuf> {
     if let Some(named) = std::env::var_os(CORE_ENV) {
         return vec![PathBuf::from(named)];
     }
-    // Spelled from the platform's own convention so the same search finds the device's `.so`.
     let name = dylib_name(core);
     let mut paths = vec![root.join("System").join(&name)];
     if let Some(dir) = std::env::current_exe()
@@ -51,37 +32,79 @@ fn candidates(root: &Path, core: Core) -> Vec<PathBuf> {
     paths
 }
 
-/// The one place a cart's `Core` becomes a dylib path. Callers that already know which core
-/// they want — `session.rs` resolves it once per insert — pass it straight through, which is
-/// what keeps this call from disagreeing with the caller's own choice. It says nothing about
-/// what the caller does with that `Core` afterward: `App` is the one that has to keep using
-/// the same value for every later read and write, and it does that by storing it rather than
-/// asking again.
-pub fn open_core(root: &Path, core: Core, system: slot_store::System) -> Box<dyn RetroCore> {
-    open_core_for(root, core, system, &candidates(root, core))
+pub struct Opened {
+    pub core: Box<dyn RetroCore>,
+    pub named: bool,
+}
+
+/// The one place a cart's `Core` becomes a dylib path. `system` is which machine folder the
+/// core's save directory is; `serial`, colour, palette and link are applied before `load`.
+pub fn open_core(
+    root: &Path,
+    core: Core,
+    system: slot_store::System,
+    serial: &str,
+    colour: bool,
+    palette: Option<GbPalette>,
+    link: Option<u8>,
+) -> Opened {
+    let paths = candidates(root, core);
+    match open_named(
+        root, core, system, serial, colour, palette, link, &paths,
+    ) {
+        Some(core) => Opened { core, named: true },
+        None => {
+            report_missing(core, &paths);
+            Opened {
+                core: Box::new(MockCore::new()),
+                named: false,
+            }
+        }
+    }
 }
 
 /// The named core if one of these opens, the mock if none of them do. A missing core is not
 /// a failure to boot: the shelf, the slot and every gesture are reachable either way.
 ///
-/// The core is told the content root's own folders, never the dylib's: on the device the
-/// core lives in `System/` and the user's BIOS does not.
-///
-/// `core` is redundant with `paths` in production — `open_core` derived both from the same
-/// `Core` — but this function stays the seam that takes `paths` explicitly, because tests
-/// plant a dylib somewhere `candidates` would not otherwise look. `apply_core_options` needs
-/// `core` too, and only `open_core_for` ever holds a concrete `slot_retro::LibretroCore` to
-/// call it on: everything above here deals in `Box<dyn RetroCore>`, which has no `set_option`.
-/// That is also why the call sits here rather than at a caller — after `open_with` succeeds,
-/// before the `Box<dyn RetroCore>` is handed back and `load` becomes reachable at all.
+/// `paths` is explicit because tests plant a dylib somewhere `candidates` would not look.
 pub fn open_core_for(
     root: &Path,
     core: Core,
     system: slot_store::System,
+    serial: &str,
+    colour: bool,
     paths: &[PathBuf],
 ) -> Box<dyn RetroCore> {
+    open_core_for_palette(root, core, system, serial, colour, None, paths)
+}
+
+pub fn open_core_for_palette(
+    root: &Path,
+    core: Core,
+    system: slot_store::System,
+    serial: &str,
+    colour: bool,
+    palette: Option<GbPalette>,
+    paths: &[PathBuf],
+) -> Box<dyn RetroCore> {
+    open_named(root, core, system, serial, colour, palette, None, paths).unwrap_or_else(|| {
+        report_missing(core, paths);
+        Box::new(MockCore::new())
+    })
+}
+
+fn open_named(
+    root: &Path,
+    core: Core,
+    system: slot_store::System,
+    serial: &str,
+    colour: bool,
+    palette: Option<GbPalette>,
+    link: Option<u8>,
+    paths: &[PathBuf],
+) -> Option<Box<dyn RetroCore>> {
     let bios = root::bios_dir(root);
-    let saves = root::saves_dir(root, system);
+    let saves = root::saves_dir(root).join(system.dir_name());
     // mGBA reads `mgba_sgb_borders` and `mgba_gb_colors` during `retro_init` — both are
     // marked "requires restart", so they have to be present in the host before `open_with`
     // runs the core's init, and `apply_core_options` (which runs after `open_with`) would be
@@ -109,17 +132,44 @@ pub fn open_core_for(
         }
         match LibretroCore::open_with(path, &bios, &saves, &initial_options) {
             Ok(mut opened) => {
-                apply_core_options(&mut opened, core);
+                apply_core_options(
+                    &mut opened,
+                    core,
+                    serial,
+                    root::has_real_bios(root),
+                    colour,
+                    palette,
+                );
+                if let Some(player) = link {
+                    apply_link_options(&mut opened, core, player);
+                }
                 eprintln!("slot: core {}", path.display());
-                return Box::new(opened);
+                return Some(Box::new(opened));
             }
             Err(e) => eprintln!("slot: {}: {e}", path.display()),
         }
     }
-    // Name the core and every path that was tried. The mock renders a rainbow test pattern
-    // and a sine tone, which on screen reads as "this core is broken" rather than "this core
-    // is missing" — the one time that happened it cost an afternoon, so the log says which
-    // file was wanted and where it was looked for.
+    None
+}
+
+pub fn palette_for(
+    chosen: Option<GbPalette>,
+    platform: Platform,
+    rom: &Path,
+    link: Option<u8>,
+) -> Option<GbPalette> {
+    chosen.filter(|_| link.is_none() && platform != Platform::Gba && dmg_only(rom))
+}
+
+pub fn dmg_only(rom: &Path) -> bool {
+    use std::io::Read;
+    let mut header = [0u8; 0x150];
+    std::fs::File::open(rom)
+        .and_then(|mut f| f.read_exact(&mut header))
+        .is_ok_and(|_| header[0x143] & 0x80 == 0)
+}
+
+fn report_missing(core: Core, paths: &[PathBuf]) {
     eprintln!(
         "slot: no {} core found, running the mock test pattern instead. Looked in: {}",
         core.as_str(),
@@ -129,19 +179,64 @@ pub fn open_core_for(
             .collect::<Vec<_>>()
             .join(", ")
     );
-    Box::new(MockCore::new())
 }
 
-/// Options a core needs before `load`, because libretro cores read them during
-/// `retro_load_game` rather than continuously.
-///
-/// `auto` resolves the serial protocol from the ROM, so two devices running the same game
-/// agree on a mode without either being told which. Anything more deliberate belongs to a
-/// link session, which knows what the other end picked. mGBA gets nothing: it has no
-/// `gpsp_serial` option, and handing it one anyway is a landmine the day it grows one.
-pub fn apply_core_options(core: &mut LibretroCore, which: Core) {
+pub fn colour_option(which: Core, on: bool) -> Option<(&'static str, &'static str)> {
+    match which {
+        Core::Mgba => Some(("mgba_color_correction", if on { "Auto" } else { "OFF" })),
+        Core::Gpsp => Some((
+            "gpsp_color_correction",
+            if on { "enabled" } else { "disabled" },
+        )),
+    }
+}
+
+pub fn apply_link_options(core: &mut LibretroCore, which: Core, player: u8) {
+    if which != Core::Mgba {
+        return;
+    }
+    core.set_option("mgba_link", "on");
+    core.set_option("mgba_link_player", &player.to_string());
+    eprintln!("slot: core: link mode on, player {player}");
+}
+
+pub fn apply_core_options(
+    core: &mut LibretroCore,
+    which: Core,
+    serial: &str,
+    bios: bool,
+    colour: bool,
+    palette: Option<GbPalette>,
+) {
+    core.set_option(&format!("{}_frameskip", which.as_str()), "auto");
+    if which == Core::Mgba {
+        core.set_option("mgba_sgb_borders", "OFF");
+        core.set_option("mgba_force_gbp", "ON");
+        match palette {
+            Some(p) => {
+                core.set_option("mgba_gb_model", "Game Boy");
+                core.set_option("mgba_gb_colors_preset", "0");
+                core.set_option("mgba_gb_colors", p.core_name());
+            }
+            None => {
+                core.set_option("mgba_gb_model", "Autodetect");
+                core.set_option("mgba_gb_colors_preset", "1");
+                core.set_option("mgba_gb_colors", "GBC Dark Green →A");
+            }
+        }
+        if let Some((key, value)) = colour_option(which, colour) {
+            core.set_option(key, value);
+        }
+    }
     if which == Core::Gpsp {
-        core.set_option("gpsp_serial", "auto");
+        core.set_option("gpsp_serial", serial);
+        core.set_option("gpsp_rtc_time_source", "system");
+        if bios {
+            core.set_option("gpsp_boot_mode", "bios");
+        }
+        if let Some((key, value)) = colour_option(which, colour) {
+            core.set_option(key, value);
+        }
     }
 }
 
@@ -150,25 +245,35 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// Both tests below mutate `SLOT_CORE`, which is process-global; the test harness runs
-    /// tests in this module on separate threads by default, so without this they can
-    /// interleave and read back a value neither of them set.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn each_core_spells_colour_correction_its_own_way() {
+        assert_eq!(
+            colour_option(Core::Mgba, true),
+            Some(("mgba_color_correction", "Auto"))
+        );
+        assert_eq!(
+            colour_option(Core::Mgba, false),
+            Some(("mgba_color_correction", "OFF"))
+        );
+        assert_eq!(
+            colour_option(Core::Gpsp, true),
+            Some(("gpsp_color_correction", "enabled"))
+        );
+        assert_eq!(
+            colour_option(Core::Gpsp, false),
+            Some(("gpsp_color_correction", "disabled"))
+        );
+    }
 
     fn lock() -> std::sync::MutexGuard<'static, ()> {
         ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The half of "the dylib chosen and the state directory used agree" that lives entirely
-    /// in this module: `candidates`, and therefore `open_core`, never spells a filename that
-    /// does not match the `Core` it was handed. `crates/slot/tests/gpsp.rs` pins the other
-    /// half — that a cart resolved to the same `Core` reads its resume state from the
-    /// matching `States/<core>/` directory — through the real `Session`.
     #[test]
     fn candidates_search_the_named_cores_own_filename_only() {
         let _g = lock();
-        // A developer's shell leaking `SLOT_CORE` into this run would short-circuit the
-        // search this test exists to check, so it cannot assume the var is unset.
         std::env::remove_var(CORE_ENV);
 
         let root = Path::new("/root");
@@ -187,12 +292,6 @@ mod tests {
         }
     }
 
-    /// The property `crates/slot/tests/gpsp.rs`'s integration test relies on: a content root
-    /// with its own tmp directory is not near `current_exe()` or `./vendor`, so without this
-    /// candidate an integration test has nowhere to plant a fake dylib for `open_core` to
-    /// find. Root cause of the gap F3 closed — before this candidate existed, a mutation
-    /// that fed `open_core` the wrong `Core` had no candidate list a test could observe
-    /// disagree.
     #[test]
     fn candidates_search_the_roots_own_system_directory() {
         let _g = lock();
@@ -204,8 +303,6 @@ mod tests {
         );
     }
 
-    /// The override is a filename, not a `Core`: it must win regardless of which core asked,
-    /// which is what makes it a trap when the ini disagrees rather than a second selector.
     #[test]
     fn the_env_override_ignores_which_core_was_asked_for() {
         let _g = lock();

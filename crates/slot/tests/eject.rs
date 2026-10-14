@@ -8,7 +8,7 @@ use slot::app::Phase;
 use slot::emu::Speed;
 use slot::persist::eject;
 use slot_input::Action;
-use slot_store::{read_slot_state, write_slot_state, Core, Mode, SlotState, StateRing};
+use slot_store::{read_slot_state, write_slot_state, Core, Mode, Platform, SlotState, StateRing};
 use slot_ui::{Draw, CART_W, OUT_H, OUT_W};
 
 fn seated(cart: &str) -> SlotState {
@@ -38,6 +38,7 @@ fn eject_clears_the_slot_only_after_the_state_is_durable() {
     .unwrap();
     eject(
         d.path(),
+        Platform::Gba,
         Core::Mgba,
         "Emerald",
         Some(&[9u8; 1024]),
@@ -45,10 +46,10 @@ fn eject_clears_the_slot_only_after_the_state_is_durable() {
     )
     .unwrap();
     assert_eq!(read_slot_state(d.path()).cart, None);
-    let r = StateRing::new(d.path(), Core::Mgba, "Emerald");
+    let r = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
     assert_eq!(r.read_resume().unwrap().unwrap().len(), 1024);
     assert_eq!(
-        std::fs::read(d.path().join("Saves/Emerald.sav")).unwrap(),
+        std::fs::read(d.path().join("Saves/GBA/Emerald.sav")).unwrap(),
         b"savdata"
     );
     assert!(
@@ -57,27 +58,34 @@ fn eject_clears_the_slot_only_after_the_state_is_durable() {
     );
 }
 
-/// The clear is last for a reason. A resume that did not land has to leave the cart
-/// seated, so the next boot resumes the session rather than losing it to a full card.
 #[test]
 fn a_resume_that_cannot_be_written_leaves_the_cart_in_the_slot() {
     let d = tmp_root_with_carts(&["Emerald"]);
     write_slot_state(d.path(), &seated("Emerald")).unwrap();
-    std::fs::write(d.path().join("States/mgba"), b"in the way").unwrap();
-    assert!(eject(d.path(), Core::Mgba, "Emerald", Some(&[9u8; 1024]), None).is_err());
+    std::fs::create_dir_all(d.path().join("States/GBA")).unwrap();
+    std::fs::write(d.path().join("States/GBA/mgba"), b"in the way").unwrap();
+    assert!(eject(
+        d.path(),
+        Platform::Gba,
+        Core::Mgba,
+        "Emerald",
+        Some(&[9u8; 1024]),
+        None
+    )
+    .is_err());
     assert_eq!(read_slot_state(d.path()).cart, Some("Emerald".into()));
 }
 
-/// The core hands back the whole save ram every eject and almost none of them touched a
-/// byte of it.
 #[test]
 fn an_unchanged_battery_save_is_not_rewritten() {
     let d = tmp_root_with_carts(&["Emerald"]);
-    std::fs::write(d.path().join("Saves/Emerald.sav"), b"savdata").unwrap();
-    let saves = d.path().join("Saves");
+    std::fs::create_dir_all(d.path().join("Saves/GBA")).unwrap();
+    std::fs::write(d.path().join("Saves/GBA/Emerald.sav"), b"savdata").unwrap();
+    let saves = d.path().join("Saves/GBA");
     set_mode(&saves, 0o555);
     let unchanged = eject(
         d.path(),
+        Platform::Gba,
         Core::Mgba,
         "Emerald",
         Some(&[0u8; 8]),
@@ -85,6 +93,7 @@ fn an_unchanged_battery_save_is_not_rewritten() {
     );
     let changed = eject(
         d.path(),
+        Platform::Gba,
         Core::Mgba,
         "Emerald",
         Some(&[0u8; 8]),
@@ -247,29 +256,33 @@ fn eject_preserves_the_levels() {
             muted: true,
             clock_set: true,
             utc_offset_min: 0,
-            // Written down rather than defaulted: these two are the literals that spell the
-            // whole state out, so a field added without them is a build error — which is how
-            // this one was found.
             mode: Mode::Dark,
-        
-        favorites: Default::default(),},
+            favorites: Default::default(),
+            ..SlotState::default()
+        },
     )
     .unwrap();
-    eject(d.path(), Core::Mgba, "Emerald", Some(&[0u8; 8]), None).unwrap();
+    eject(
+        d.path(),
+        Platform::Gba,
+        Core::Mgba,
+        "Emerald",
+        Some(&[0u8; 8]),
+        None,
+    )
+    .unwrap();
     let s = read_slot_state(d.path());
     assert_eq!((s.brightness, s.blue_light, s.volume), (2, 7, 35));
     assert!(s.muted, "the cart came out and the sound came back");
 }
 
-/// The writes hang off leaving `Playing`, not off the end of the animation: the card can
-/// be pulled while the cart is still sliding out.
 #[test]
 fn ejecting_a_playing_cart_flushes_before_the_animation_starts() {
     let d = tmp_root_with_carts(&["Emerald", "Fusion"]);
     let mut a = app_playing_in(d.path(), "Emerald");
     a.apply(Action::Eject);
     assert!(matches!(a.phase(), Phase::Ejecting { .. }));
-    let r = StateRing::new(d.path(), Core::Mgba, "Emerald");
+    let r = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
     assert_eq!(
         r.read_resume().unwrap().expect("nothing was flushed").len(),
         1024
@@ -277,8 +290,6 @@ fn ejecting_a_playing_cart_flushes_before_the_animation_starts() {
     assert_eq!(read_slot_state(d.path()).cart, None);
 }
 
-/// A cart that never loaded has no state of its own, and a resume written here would be
-/// whatever the snapshot last had to hand.
 #[test]
 fn a_refused_cart_writes_no_resume() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -289,16 +300,15 @@ fn a_refused_cart_writes_no_resume() {
     for _ in 0..120 {
         a.update(1.0 / 60.0);
     }
-    assert!(StateRing::new(d.path(), Core::Mgba, "Emerald")
-        .read_resume()
-        .unwrap()
-        .is_none());
+    assert!(
+        StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
+            .read_resume()
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(read_slot_state(d.path()).cart, None);
 }
 
-/// A cart whose core never arrived is still in the slot and still has to come out. Without
-/// this the only way out of a stalled insert is a reboot, and `SLOT_NO_CORE=1`, which holds
-/// the slot on screen so the travel can be watched, would be a one way trip.
 #[test]
 fn a_cart_can_be_ejected_before_its_core_is_ready() {
     let d = tmp_root_with_carts(&["Emerald", "Fusion"]);
@@ -312,8 +322,6 @@ fn a_cart_can_be_ejected_before_its_core_is_ready() {
     );
 }
 
-/// The insert run backwards. The row closes back up behind the cart as it comes out; before
-/// this the shelf appeared all at once the instant the travel ended.
 #[test]
 fn the_row_closes_back_up_as_the_cart_comes_out() {
     let d = tmp_root_with_carts(&["Emerald", "Fusion", "Metroid"]);
@@ -343,19 +351,12 @@ fn the_row_closes_back_up_as_the_cart_comes_out() {
     );
 }
 
-/// The eject is the insert played backwards: every part of the screen at the same rate, in
-/// the opposite direction. It used to be driven off two clocks of different lengths, so the
-/// row closed a third faster than it opened, and the veil darkened on the way out as well as
-/// on the way in rather than lifting.
 #[test]
 fn the_eject_is_the_insert_run_backwards() {
     let d = tmp_root_with_carts(&["Emerald", "Fusion", "Metroid"]);
     let mut a = boot(d.path());
     let dt = 1.0 / 60.0;
 
-    // What each frame of the travel moves the cart by, which is the thing that has to
-    // mirror. Positions cannot be compared directly: the two runs are sampled either side of
-    // a frame boundary and sit one step apart for their whole length.
     let steps = |a: &mut slot::app::App, done: fn(f32) -> bool| {
         let mut out = Vec::new();
         let mut last = a.seat();
@@ -374,7 +375,6 @@ fn the_eject_is_the_insert_run_backwards() {
     }
 
     a.apply(Action::Eject);
-    // Past the picture going out and the beat after it, neither of which is travel.
     while a.seat() >= 1.0 {
         a.update(dt);
     }
@@ -391,7 +391,6 @@ fn the_eject_is_the_insert_run_backwards() {
         going_in.len(),
         coming_out.len()
     );
-    // Ends excluded: both are clipped by the clamp at their own end of the travel.
     let n = going_in.len().min(coming_out.len()) - 1;
     for i in 1..n {
         let (a_in, a_out) = (going_in[i], coming_out[coming_out.len() - 1 - i]);
@@ -402,8 +401,6 @@ fn the_eject_is_the_insert_run_backwards() {
     }
 }
 
-/// Both directions are drawn from `seat` alone, so nothing on the screen can run on a clock
-/// of its own and quietly stop mirroring: the veil, the row and the cart all move together.
 #[test]
 fn the_veil_lifts_on_the_way_out_instead_of_falling_again() {
     let d = tmp_root_with_carts(&["Emerald", "Fusion", "Metroid"]);
@@ -429,7 +426,6 @@ fn the_veil_lifts_on_the_way_out_instead_of_falling_again() {
             })
             .unwrap_or(0.0)
     };
-    // Past the picture going out and the beat after it, which is stillness by design.
     while a.seat() >= 1.0 {
         a.update(dt);
     }
@@ -444,9 +440,6 @@ fn the_veil_lifts_on_the_way_out_instead_of_falling_again() {
     );
 }
 
-/// The game is over the moment the button is held. A core left running behind a dark screen
-/// is a game still being heard after the player ended it, and the cart used to start coming
-/// out over the top of it.
 #[test]
 fn the_core_stops_before_the_cart_moves() {
     let d = tmp_root_with_carts(&["Emerald", "Fusion"]);
@@ -459,29 +452,8 @@ fn the_core_stops_before_the_cart_moves() {
     assert!(s.has_core(), "no core to stop");
 
     s.app_mut().apply(Action::Eject);
-    // One update to carry the new phase through `sync_speed`, which is the only place
-    // anything tells the worker to pause.
     s.update(1.0 / 60.0);
 
-    // Wait for the worker to say it read `Paused`, not for the frame count to sit still.
-    // Stillness is ambiguous from the outside: a descheduled worker holds at whatever count it
-    // last reached for exactly as long as the scheduler ignores it, then wakes and publishes
-    // anyway, and no number of quiet updates tells the two apart.
-    //
-    // Nor may this wait keep calling `update`: that steps the eject's own travel, and a `dt`
-    // of a sixtieth of a second per call covers the whole animation in far less real time than
-    // the worker's own ~16.6ms pace needs to take even one more turn — driving the wait this
-    // way would spend the travel before the worker was ever scheduled to answer, the same gap
-    // that made the frame count an unreliable witness in the first place. Spending wall-clock
-    // time instead, with `seat` held still, actually gives the worker the turn being waited on.
-    //
-    // `observed_speed` is not an inference from the outside. The worker stores it right where
-    // it reads `speed`, with `Release`, so a reader who sees `Paused` here has a proof, not a
-    // guess: if the worker read Paused on some iteration, that iteration ran zero steps and
-    // published nothing; nothing sets the speed back during an eject, so no later iteration can
-    // have published either; and `Release` paired with this load's `Acquire` means any publish
-    // from an earlier iteration is ordered before the store this loop just observed. A count
-    // that has not moved yet only suggests the core stopped. This confirms it.
     let deadline = Instant::now() + Duration::from_secs(2);
     while s.observed_speed() != Some(Speed::Paused) {
         assert!(
@@ -503,4 +475,16 @@ fn the_core_stops_before_the_cart_moves() {
         published,
         "the core kept running while the picture was out"
     );
+}
+
+#[test]
+fn an_eject_the_card_refuses_puts_up_a_banner() {
+    let d = tmp_root_with_carts(&["Emerald", "Fusion"]);
+    let mut a = app_playing_in(d.path(), "Emerald");
+    let states = d.path().join("States");
+    let _ = std::fs::remove_dir_all(&states);
+    std::fs::write(&states, b"").unwrap();
+    a.apply(Action::Eject);
+    a.tick_ms(10);
+    assert!(a.card_alarm(), "a refused eject raised no alarm");
 }

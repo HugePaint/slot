@@ -2,25 +2,30 @@ mod common;
 
 use tempfile::tempdir;
 
-/// `task dist` and `task sdcard` both build the layout by running the binary with
-/// `--init-root`, so `root::ensure` is the only implementation of it. This is what keeps a
-/// card the app cannot read from being assembled in the first place.
 #[test]
-fn ensure_creates_the_six_folders_and_nothing_else() {
+fn ensure_creates_every_folder_dirs_names_and_nothing_else() {
     let d = tempdir().unwrap();
     let out = d.path().join("dist");
     slot::root::ensure(&out);
+
+    for name in slot::root::DIRS {
+        assert!(out.join(name).is_dir(), "{name} was not created");
+    }
+
     let mut got: Vec<String> = std::fs::read_dir(&out)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     got.sort();
-    let mut want: Vec<String> = slot::root::DIRS.iter().map(|s| s.to_string()).collect();
+    let mut want: Vec<String> = slot::root::DIRS
+        .iter()
+        .map(|s| s.split('/').next().unwrap().to_string())
+        .collect();
     want.sort();
+    want.dedup();
     assert_eq!(got, want);
 }
 
-/// `task sdcard` points at a directory the caller already keeps roms in.
 #[test]
 fn ensure_leaves_existing_content_alone() {
     let d = tempdir().unwrap();
@@ -35,7 +40,7 @@ fn ensure_leaves_existing_content_alone() {
 }
 
 #[test]
-fn a_booted_app_root_has_the_same_six_folders() {
+fn a_booted_app_root_has_the_same_folders() {
     let d = common::tmp_root_with_carts(&["Emerald"]);
     for name in slot::root::DIRS {
         assert!(d.path().join(name).is_dir(), "app root is missing {name}");

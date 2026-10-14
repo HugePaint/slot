@@ -1,12 +1,9 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use slot_power::{motor_change, rumble_node, Battery, Charge, DevicePlatform, LedState, Platform};
 use tempfile::TempDir;
 
-/// A sysfs tree shaped like the H700's, with the noise the probe has to walk past: the
-/// backlight is not called `backlight`, and the battery is one power supply among several.
-/// `status` is optional because the attribute may simply not be populated on this PMIC.
 fn sysfs_with(max_brightness: &str, capacity: &str, status: Option<&str>) -> TempDir {
     let d = tempfile::tempdir().unwrap();
     let bl = d.path().join("class/backlight/backlight-lcd0");
@@ -65,8 +62,6 @@ fn the_backlight_steps_span_whatever_range_the_kernel_reports() {
     );
 }
 
-/// Step 0 is the one the lid closes with, so it has to be the panel actually off. Any floor
-/// under it lights a shut clamshell, which is the whole thing the doze exists to prevent.
 #[test]
 fn step_zero_is_dark() {
     let d = sysfs("255", "87");
@@ -81,16 +76,12 @@ fn the_battery_is_found_past_the_supplies_that_are_not_one() {
     assert_eq!(platform(&d).battery().map(|b| b.percent), Some(87));
 }
 
-/// Zero would be a battery critical, which flushes and powers the device off mid game. A
-/// gauge that will not parse has to read as no gauge at all.
 #[test]
 fn a_gauge_that_reads_as_nonsense_is_no_reading_rather_than_zero() {
     let d = sysfs("255", "not a number");
     assert!(platform(&d).battery().is_none());
 }
 
-/// A kernel that does not offer these is a device slot has not been ported to yet, and the
-/// frontend still has to come up on it.
 #[test]
 fn a_tree_with_neither_a_panel_nor_a_gauge_still_boots() {
     let d = tempfile::tempdir().unwrap();
@@ -106,10 +97,6 @@ fn the_three_states_the_kernel_names_are_taken_at_face_value() {
     assert_eq!(charge_of(Some("Full")), Charge::Full);
 }
 
-/// On this PMIC `current_now` already reads empty, so a standard attribute being present is
-/// no promise that it is populated. Every reading that is not one of the three is the answer
-/// that changes nothing: "Not charging" means on a charger but not filling, which cannot be
-/// told from an inhibited charge without hardware.
 #[test]
 fn everything_else_is_unknown_rather_than_a_guess() {
     assert_eq!(charge_of(Some("Not charging")), Charge::Unknown);
@@ -130,8 +117,6 @@ fn the_gauge_and_the_charge_state_come_back_together() {
     );
 }
 
-/// A tree with no gauge at all has no second absence case to reason about: the charge state
-/// is simply the one every consumer already has to handle.
 #[test]
 fn a_tree_with_no_gauge_reads_as_unknown_rather_than_absent() {
     let d = tempfile::tempdir().unwrap();
@@ -140,9 +125,6 @@ fn a_tree_with_no_gauge_reads_as_unknown_rather_than_absent() {
     assert_eq!(p.charge(), Charge::Unknown);
 }
 
-/// There is no console on the device, so what the probe walked away with has to reach the
-/// card. A backlight that was never found and one that is found but ignores the write are
-/// different faults with the same symptom, and this is what tells them apart.
 #[test]
 fn the_probe_reports_what_it_found() {
     let report = platform(&sysfs("255", "87")).report();
@@ -161,9 +143,6 @@ fn a_probe_that_found_nothing_says_so_rather_than_saying_nothing() {
     assert!(report.contains("no motor"), "{report}");
 }
 
-/// Whether the board has a clock that survives the battery coming out decides what "set the
-/// time" can even mean here: with one, `hwclock` persists it; without, nothing does and the
-/// card has to remember instead.
 #[test]
 fn the_report_says_whether_there_is_an_rtc() {
     let d = sysfs("255", "87");
@@ -171,8 +150,6 @@ fn the_report_says_whether_there_is_an_rtc() {
     assert!(platform(&d).report().contains("rtc0"));
 }
 
-/// The H700 has no `/sys/class/backlight` at all. Its display driver's only control surface
-/// is four writes under debugfs, which rcS mounts for exactly this reason.
 fn dispdbg_tree() -> TempDir {
     let d = tempfile::tempdir().unwrap();
     let dbg = d.path().join("kernel/debug/dispdbg");
@@ -207,8 +184,6 @@ fn a_tree_with_no_backlight_class_drives_the_panel_through_dispdbg() {
     assert_eq!(dispdbg(&d, "param"), "0", "step zero has to be dark");
 }
 
-/// The class is the standard and stays first: a board that has one is not made to go through
-/// a debugfs file that may not even be mounted.
 #[test]
 fn a_backlight_class_still_wins_over_dispdbg() {
     let d = sysfs("255", "87");
@@ -220,8 +195,6 @@ fn a_backlight_class_still_wins_over_dispdbg() {
     assert_eq!(dispdbg(&d, "param"), "", "dispdbg was written to as well");
 }
 
-/// The motor is a force feedback node rather than a sysfs knob on this board, and which event
-/// node carries it is no more stable across boots than the buttons are.
 #[test]
 fn the_motor_is_found_by_capability_rather_than_by_position() {
     let d = tempfile::tempdir().unwrap();
@@ -237,22 +210,15 @@ fn the_motor_is_found_by_capability_rather_than_by_position() {
     assert_eq!(rumble_node(d.path()).as_deref(), Some("event1"));
 }
 
-/// A board with no motor is a device that does not buzz, not a boot failure.
 #[test]
 fn a_tree_with_no_force_feedback_has_no_motor() {
     let d = tempfile::tempdir().unwrap();
     let caps = d.path().join("class/input/event0/device/capabilities");
     fs::create_dir_all(&caps).unwrap();
-    // FF_PERIODIC but not FF_RUMBLE. A node that can do force feedback of a kind this has no
-    // use for is not a motor to buzz a cart with.
     fs::write(caps.join("ff"), "20000 0\n").unwrap();
     assert!(rumble_node(d.path()).is_none());
 }
 
-/// The core asks for the same strength most frames, and this driver ignores magnitude
-/// altogether: 16383 and 65535 are the same buzz on hardware. Only the edge between still and
-/// moving is worth a syscall, and rebuilding the effect to chase a level that does not exist
-/// puts an audible blip through the motor for nothing.
 #[test]
 fn only_the_edge_between_still_and_moving_reaches_the_motor() {
     assert_eq!(motor_change(0, false), None);
@@ -277,7 +243,6 @@ fn read(d: &TempDir, path: &str) -> String {
         .to_string()
 }
 
-/// A multicolour node takes the whole policy: three intensities, one write.
 #[test]
 fn a_multicolour_led_gets_a_colour_per_state() {
     let d = sysfs("255", "87");
@@ -298,8 +263,6 @@ fn a_multicolour_led_gets_a_colour_per_state() {
     assert_ne!(amber, green);
 }
 
-/// A single-brightness LED can only carry one distinction without a blink timer, and the
-/// battery poll is far too coarse to drive one. Low is the state worth spending it on.
 #[test]
 fn a_mono_led_is_on_except_when_the_battery_is_low() {
     let d = sysfs("255", "87");
@@ -317,8 +280,6 @@ fn a_mono_led_is_on_except_when_the_battery_is_low() {
     assert_eq!(read(&d, "power/brightness"), "0");
 }
 
-/// BaseOS has no LED userland at all — no sysfs reference, no script, nothing in its own
-/// on-device validation. There may well be no node here, and that is not an error.
 #[test]
 fn a_tree_with_no_led_is_a_silent_no_op() {
     let d = sysfs("255", "87");
@@ -328,11 +289,6 @@ fn a_tree_with_no_led_is_a_silent_no_op() {
     assert!(!d.path().join("class/leds").exists());
 }
 
-/// The sunxi role manager clears the gadget's UDC binding when the cable goes, and BaseOS
-/// deliberately runs no reconnect watcher: its documented recovery is a reboot. Rewriting
-/// `g1/UDC` is the one mechanism it calls safe and proven, so that is all this does. The
-/// manager's own role attributes are never touched — writing `otg_role` wedges the writer in
-/// D state forever, and even reading its siblings can switch the port.
 #[test]
 fn relinking_adb_rebinds_the_gadget_to_the_controller() {
     let d = tempfile::tempdir().unwrap();
@@ -353,12 +309,59 @@ fn relinking_adb_rebinds_the_gadget_to_the_controller() {
     );
 }
 
-/// No gadget tree is a device without the USB bits, or one where adb was opted out of. It is
-/// a chord that does nothing, not a failure.
 #[test]
 fn relinking_adb_without_a_gadget_does_nothing() {
     let d = tempfile::tempdir().unwrap();
     fs::create_dir_all(d.path().join("class/udc/5100000.udc-controller")).unwrap();
     let mut p = DevicePlatform::probe(d.path(), PathBuf::from("/mnt/sdcard"));
     assert!(!p.relink_adb());
+}
+
+fn with_jack(d: &TempDir, level: &str) {
+    let dir = d.path().join("kernel/debug");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("gpio"),
+        format!(
+            "gpiochip0: GPIOs 0-31, parent: platform/pio, pio:\n gpio-259 (                    |Headphone detection ) in  {level}    \n gpio-260 (                    |usb_id_det          ) in  lo    \n"
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn headphones_follow_the_detection_pin() {
+    let d = sysfs("255", "87");
+    assert!(!platform(&d).headphones(), "no gpio file reads as speaker");
+    with_jack(&d, "hi");
+    assert!(platform(&d).headphones());
+    with_jack(&d, "lo");
+    assert!(!platform(&d).headphones());
+}
+
+const MOUNTS: &str = "\
+/dev/mmcblk0p5 / ext4 rw,noatime 0 0
+/dev/mmcblk0p7 /mnt/sdcard vfat ro,noatime,fmask=0022,errors=remount-ro 0 0
+tmpfs /mnt/sdcard/System/slot tmpfs rw,relatime 0 0
+/dev/mmcblk1p1 /mnt/other exfat rw,noatime,errors=remount-ro 0 0
+";
+
+#[test]
+fn a_card_the_kernel_remounted_read_only_reads_as_read_only() {
+    assert!(slot_power::read_only_in(MOUNTS, Path::new("/mnt/sdcard")));
+}
+
+#[test]
+fn the_closest_mount_decides_not_the_root() {
+    assert!(!slot_power::read_only_in(MOUNTS, Path::new("/mnt/other")));
+    assert!(!slot_power::read_only_in(
+        MOUNTS,
+        Path::new("/mnt/sdcard/System/slot")
+    ));
+}
+
+#[test]
+fn an_option_that_merely_mentions_ro_is_not_read_only() {
+    let m = "/dev/x /mnt/card vfat rw,errors=remount-ro 0 0\n";
+    assert!(!slot_power::read_only_in(m, Path::new("/mnt/card")));
 }

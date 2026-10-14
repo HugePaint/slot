@@ -17,8 +17,8 @@ fn a_missing_bios_folder_still_boots_a_core() {
     let _g = core_lock();
     let d = common::tmp_root_with_real_carts(&["Emerald"]);
     std::fs::remove_dir_all(d.path().join("BIOS")).ok();
-    let mut core = open_core_for(d.path(), Core::Mgba, &vendored_core_paths());
-    core.load(&d.path().join("Games/Emerald.gba")).unwrap();
+    let mut core = open_core_for(d.path(), Core::Mgba, "auto", false, &vendored_core_paths());
+    core.load(&d.path().join("Games/GBA/Emerald.gba")).unwrap();
     core.run_frame(ButtonMask::default());
 }
 
@@ -27,8 +27,8 @@ fn an_empty_bios_folder_still_boots_a_core() {
     let _g = core_lock();
     let d = common::tmp_root_with_real_carts(&["Emerald"]);
     std::fs::create_dir_all(d.path().join("BIOS")).unwrap();
-    let mut core = open_core_for(d.path(), Core::Mgba, &vendored_core_paths());
-    core.load(&d.path().join("Games/Emerald.gba")).unwrap();
+    let mut core = open_core_for(d.path(), Core::Mgba, "auto", false, &vendored_core_paths());
+    core.load(&d.path().join("Games/GBA/Emerald.gba")).unwrap();
     core.run_frame(ButtonMask::default());
 }
 
@@ -51,8 +51,6 @@ fn the_core_is_told_the_bios_folder_not_the_dylib_folder() {
     );
 }
 
-/// The save directory is the other half of the same wiring, and pointing it at the dylib
-/// would scatter `.sav` files next to the core instead of into the content root.
 #[test]
 fn the_core_is_told_the_saves_folder_too() {
     let _g = core_lock();
@@ -68,13 +66,56 @@ fn the_core_is_told_the_saves_folder_too() {
     assert_eq!(core.reported_save_dir(), saves.to_string_lossy());
 }
 
-/// A card that has never held slot. has none of the six folders, and every write path
-/// below assumes its own is already there.
 #[test]
-fn boot_creates_the_six_content_folders() {
+fn only_a_real_bios_image_turns_the_boot_splash_on() {
+    let d = common::tmp_root_with_carts(&["Emerald"]);
+    let bios = d.path().join("BIOS").join("gba_bios.bin");
+
+    assert!(
+        !slot::root::has_real_bios(d.path()),
+        "an empty BIOS folder counted as a BIOS"
+    );
+
+    for (bytes, what) in [
+        (vec![], "a zero byte file"),
+        (vec![0x18u8; 1024], "a truncated image, right first byte"),
+        (vec![0x18u8; 16 * 1024 - 1], "one byte short of an image"),
+        (vec![0x18u8; 16 * 1024 + 1], "one byte past an image"),
+        (vec![0u8; 16 * 1024], "16 KB that starts like nothing"),
+        (vec![0xffu8; 16 * 1024], "16 KB of erased flash"),
+    ] {
+        std::fs::write(&bios, &bytes).unwrap();
+        assert!(
+            !slot::root::has_real_bios(d.path()),
+            "{what} counted as a BIOS: gpSP would fall back to its built-in one and boot \
+             through a splash that does not exist"
+        );
+    }
+
+    let mut real = vec![0u8; 16 * 1024];
+    real[0] = 0x18;
+    std::fs::write(&bios, &real).unwrap();
+    assert!(
+        slot::root::has_real_bios(d.path()),
+        "a 16 KB image starting 0x18 is what gpSP itself accepts, and it was refused"
+    );
+}
+
+#[test]
+fn a_missing_bios_folder_turns_the_boot_splash_off() {
+    let d = common::tmp_root_with_carts(&["Emerald"]);
+    std::fs::remove_dir_all(d.path().join("BIOS")).unwrap();
+    assert!(
+        !slot::root::has_real_bios(d.path()),
+        "a missing BIOS folder counted as a BIOS"
+    );
+}
+
+#[test]
+fn boot_creates_every_content_folder() {
     let d = tempdir().unwrap();
     let _ = slot::app::App::boot(d.path());
-    for sub in ["BIOS", "Games", "Labels", "Saves", "States", "System"] {
+    for sub in slot::root::DIRS {
         assert!(d.path().join(sub).is_dir(), "{sub} was not created");
     }
 }

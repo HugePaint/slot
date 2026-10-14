@@ -1,8 +1,11 @@
-use slot_store::{clean_label, Cart};
+use slot_store::gb::Class;
+use slot_store::{clean_label, Cart, Outline, Platform, System};
 
 use crate::art;
-use crate::shell::{shell_for, Finish, Shell};
-use crate::silhouette::{cart_depth, cart_mask, detail_mask};
+use crate::shell::{shell_for, Finish, Shell, DEFAULT_SHELL};
+use crate::silhouette::{
+    cart_depth, cart_mask, detail_mask, gb_cart_mask, GbShell,
+};
 use crate::text;
 
 /// Where the time inside `cart_face` goes, accumulated over every call since the last take.
@@ -57,6 +60,16 @@ pub const FACE_SCALE: u32 = 2;
 pub const FACE_W: u32 = CART_W * FACE_SCALE;
 pub const FACE_H: u32 = CART_H * FACE_SCALE;
 
+/// Seated size of a cart in the bay, in the units the slot chrome measures the mouth against.
+pub const SEATED_W: u32 = 240;
+const SEATED_H: u32 = 141;
+const GB_SEATED_H: u32 = 259;
+
+/// Upstream Game Boy cart geometry, kept beside the shelf's own `CartSize`. `gb_cart_shadow`
+/// rasterises at these; the row itself draws `size_for`.
+pub const GB_CART_W: u32 = 312;
+pub const GB_CART_H: u32 = (GB_CART_W * GB_SEATED_H + SEATED_W / 2) / SEATED_W;
+
 /// A cart's own size, per machine — and the row it stands on.
 ///
 /// The Advance cart is landscape and its shelf stands three across; a Game Boy or Game Boy
@@ -81,9 +94,9 @@ pub struct CartSize {
     label: [u32; 4],
 }
 
-pub const fn size_for(system: slot_store::System) -> CartSize {
+pub const fn size_for(system: System) -> CartSize {
     match system {
-        slot_store::System::Gba => CartSize {
+        System::Gba => CartSize {
             w: CART_W,
             h: CART_H,
             pitch: 360.0,
@@ -91,7 +104,7 @@ pub const fn size_for(system: slot_store::System) -> CartSize {
             side: 1.0,
             label: [90, 228, 910, 863],
         },
-        slot_store::System::Gb | slot_store::System::Gbc => CartSize {
+        System::Gb | System::Gbc => CartSize {
             w: 240,
             h: 276,
             pitch: 240.0,
@@ -159,18 +172,12 @@ impl CartSize {
     }
 }
 
-/// The paper label, inset in the shell rather than covering it: 9% to 91% across and 22.8%
-/// to 86.3% down. The vertical placement is the reference's, and the band it leaves above is
-/// the moulded grip; that asymmetry is most of what makes the face read as a cartridge
-/// rather than a bordered rectangle. The horizontal inset is deliberately tighter than the
-/// reference's 14.1%, which was an icon's proportion rather than a cartridge's: a real
-/// label runs nearly the full width with only a thin edge of plastic beside it.
 pub const fn label_panel(w: u32, h: u32) -> (u32, u32, u32, u32) {
     (
-        (w * 90 + 500) / 1000,
-        (h * 228 + 500) / 1000,
-        (w * 910 + 500) / 1000,
-        (h * 863 + 500) / 1000,
+        (w * 135 + 500) / 1000,
+        (h * 231 + 500) / 1000,
+        (w * 875 + 500) / 1000,
+        (h * 882 + 500) / 1000,
     )
 }
 
@@ -181,10 +188,22 @@ pub const LABEL_Y: u32 = label_panel(FACE_W, FACE_H).1;
 pub const LABEL_W: u32 = label_panel(FACE_W, FACE_H).2 - LABEL_X;
 pub const LABEL_H: u32 = label_panel(FACE_W, FACE_H).3 - LABEL_Y;
 
+pub const fn gb_label_panel(w: u32, h: u32) -> (u32, u32, u32, u32) {
+    (
+        (w * 147 + 500) / 1000,
+        (h * 291 + 500) / 1000,
+        (w * 854 + 500) / 1000,
+        (h * 868 + 500) / 1000,
+    )
+}
+
+pub const GB_LABEL_X: u32 = gb_label_panel(GB_CART_W, GB_CART_H).0;
+pub const GB_LABEL_Y: u32 = gb_label_panel(GB_CART_W, GB_CART_H).1;
+pub const GB_LABEL_W: u32 = gb_label_panel(GB_CART_W, GB_CART_H).2 - GB_LABEL_X;
+pub const GB_LABEL_H: u32 = gb_label_panel(GB_CART_W, GB_CART_H).3 - GB_LABEL_Y;
+
 const PAD: u32 = 10 * FACE_SCALE;
 const MAX_LINES: usize = 3;
-/// Three lines have to clear the label's height, and Open Sans Bold sets at about 1.36x
-/// the em. The label is landscape now, so it runs out of height long before width.
 const MAX_PX: f32 = LABEL_H as f32 / (MAX_LINES as f32 * 1.36);
 const MIN_PX: f32 = 10.0 * FACE_SCALE as f32;
 
@@ -198,13 +217,54 @@ pub struct CartFace {
     pub h: u32,
 }
 
+pub fn gb_shell_of(cart: &Cart) -> Option<GbShell> {
+    match cart.platform {
+        Platform::Gba => None,
+        Platform::Gb | Platform::Gbc => Some(match cart.shell.map(|c| c.outline) {
+            Some(Outline::Notched) => GbShell::Notched,
+            Some(Outline::Rounded) => GbShell::Rounded,
+            _ => match slot_store::gb::class(&cart.rom) {
+                Class::ColourOnly => GbShell::Rounded,
+                Class::Original | Class::DualMode => GbShell::Notched,
+            },
+        }),
+    }
+}
+
+pub fn seated_box(platform: Platform) -> (u32, u32) {
+    match platform {
+        Platform::Gba => (SEATED_W, SEATED_H),
+        Platform::Gb | Platform::Gbc => (SEATED_W, GB_SEATED_H),
+    }
+}
+
+pub fn cart_box(platform: Platform) -> (u32, u32) {
+    let system = match platform {
+        Platform::Gba => System::Gba,
+        Platform::Gb => System::Gb,
+        Platform::Gbc => System::Gbc,
+    };
+    let size = size_for(system);
+    (size.w, size.h)
+}
+
 /// The cart's own shape in black. Drawn under a side cart so the dimming is a cart in shadow
 /// rather than a cart you can see through: over a wallpaper a translucent face is a ghost,
 /// and the shelf's carts are solid objects.
-pub fn cart_shadow(size: CartSize, system: slot_store::System) -> CartFace {
+pub fn cart_shadow(size: CartSize, system: System) -> CartFace {
     let (w, h) = (size.face_w(), size.face_h());
     let mut rgba = Vec::with_capacity((w * h * 4) as usize);
     for cover in cart_mask(system, w, h) {
+        rgba.extend_from_slice(&[0, 0, 0, *cover]);
+    }
+    CartFace { rgba, w, h }
+}
+
+pub fn gb_cart_shadow(shell: GbShell) -> CartFace {
+    let mask = gb_cart_mask(shell);
+    let (w, h) = (GB_CART_W, GB_CART_H);
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for cover in mask {
         rgba.extend_from_slice(&[0, 0, 0, *cover]);
     }
     CartFace { rgba, w, h }
@@ -217,6 +277,17 @@ pub fn cart_shadow(size: CartSize, system: slot_store::System) -> CartFace {
 /// crosses hundreds of carts and they cannot all be rasterised, but they can all be *a cart*:
 /// this one. Drawn where that cart is, it slides past as a cartridge rather than as the label's
 /// colour alone, which read as a bar of paint going by.
+pub fn cart_placeholder(size: CartSize, system: System) -> CartFace {
+    // The stand-in wears the current theme's shell rather than the table's dark grey, which is
+    // what makes it belong to the light theme's furniture too.
+    let shell = themed_shell(&DEFAULT_SHELL);
+    let mut face = shell_face(&shell, size, system);
+    mould_detail(&mut face, &shell, size, system);
+    recess_label(&mut face, &shell, size.label_box());
+    clip_to_silhouette(&mut face, size, system);
+    face
+}
+
 /// The built-in shell as the current theme wants it. On the dark theme that is the table's own
 /// colour; on the light theme a built-in shell takes the housing's — the off-white the top and
 /// bottom bands are drawn in — so a cart reads as part of the same device as the furniture
@@ -244,32 +315,28 @@ fn themed_shell(shell: &Shell) -> Shell {
     }
 }
 
-pub fn cart_placeholder(size: CartSize, system: slot_store::System) -> CartFace {
-    // The stand-in wears the current theme's shell rather than the table's dark grey, which is
-    // what makes it belong to the light theme's furniture too.
-    let shell = themed_shell(&shell_for(""));
-    let mut face = shell_face(&shell, size, system);
-    mould_detail(&mut face, &shell, size, system);
-    recess_label(&mut face, &shell, size.label_box());
-    clip_to_silhouette(&mut face, size, system);
-    face
-}
-
 pub fn cart_face(cart: &Cart) -> CartFace {
-    let shell = shell_for(&cart.code);
-    let system = cart.system();
-    let size = size_for(system);
+    let shell = shell_for(cart);
+    let size = size_for(cart.system());
     // A card that supplies its own cart art is drawn from that instead of from the built-in
     // silhouette: see `cart_art`. Nothing below changes for a card that does not.
     if let Some(face) = card_face(cart, &shell, size) {
         return face;
     }
-    // Past the card's own art the built-in shell answers to the theme as well: on the light
-    // theme it takes the housing's colour, which is the same rule `card_face` has just applied
-    // to an Advance cart's own art — so a card with art and a card without still read as one
-    // device. On the dark theme the game's own shell colour stands.
-    let shell = themed_shell(&shell);
+    let (_, _, lw, lh) = size.label_box();
+    let art = cart.label.as_deref().and_then(|p| art::cover(p, lw, lh));
+    cart_face_with(cart, art)
+}
 
+pub fn label_size(cart: &Cart) -> (u32, u32) {
+    let (_, _, lw, lh) = size_for(cart.system()).label_box();
+    (lw, lh)
+}
+
+pub fn cart_face_with(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
+    let shell = themed_shell(&shell_for(cart));
+    let system = cart.system();
+    let size = size_for(system);
     let (lx, ly, lw, lh) = size.label_box();
 
     let t = std::time::Instant::now();
@@ -277,7 +344,7 @@ pub fn cart_face(cart: &Cart) -> CartFace {
     face_profile::add(0, t.elapsed());
 
     let t = std::time::Instant::now();
-    let label = match cart.label.as_deref().and_then(|p| art::cover(p, lw, lh)) {
+    let label = match art {
         Some(rgba) => rgba,
         None => sized_label(&label_text(cart), lw, lh),
     };
@@ -304,7 +371,7 @@ pub fn cart_face(cart: &Cart) -> CartFace {
 
 /// Colour is left alone and only alpha is cut, because the sprite pass blends straight
 /// alpha rather than premultiplied.
-fn clip_to_silhouette(face: &mut CartFace, size: CartSize, system: slot_store::System) {
+fn clip_to_silhouette(face: &mut CartFace, size: CartSize, system: System) {
     for (px, cover) in face
         .rgba
         .chunks_exact_mut(4)
@@ -314,8 +381,6 @@ fn clip_to_silhouette(face: &mut CartFace, size: CartSize, system: slot_store::S
     }
 }
 
-/// Stable across runs, which the standard hasher is not: the same game must be the same
-/// colour on every boot, or the shelf is unrecognisable from memory.
 pub fn label_colour(title: &str) -> [u8; 3] {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in title.as_bytes() {
@@ -325,28 +390,79 @@ pub fn label_colour(title: &str) -> [u8; 3] {
     hsv_to_rgb((h % 360) as f32, 0.52, 0.74)
 }
 
-/// The header title is capped at twelve characters, so it reads `POKEMON EMER`. The
-/// filename holds the real name.
 pub fn label_text(cart: &Cart) -> String {
     clean_label(&cart.stem)
 }
 
-fn shell_face(shell: &Shell, size: CartSize, system: slot_store::System) -> CartFace {
+fn shell_face(shell: &Shell, size: CartSize, system: System) -> CartFace {
     let (w, h) = (size.face_w(), size.face_h());
     let mut rgba = Vec::with_capacity((w * h * 4) as usize);
     let edge = rim_colour(shell.colour);
-    for depth in cart_depth(system, w, h) {
+    for (i, depth) in cart_depth(system, w, h).iter().enumerate() {
+        let (x, y) = (i as u32 % w, i as u32 / w);
         let c = match shell.finish {
             Finish::Solid => shell.colour,
-            Finish::Translucent => lerp(edge, shell.colour, (*depth as u32).min(RIM), RIM),
+            Finish::Translucent | Finish::Glitter => {
+                let body = through(shell.colour, inside(system, w, h, x, y).unwrap_or(shell.colour));
+                let c = lerp(edge, body, (*depth as u32).min(RIM), RIM);
+                if shell.finish == Finish::Glitter && fleck(x, y) {
+                    lerp(c, [0xff; 3], 100, 255)
+                } else {
+                    c
+                }
+            }
         };
         rgba.extend_from_slice(&[c[0], c[1], c[2], 255]);
     }
     CartFace { rgba, w, h }
 }
 
-/// Light through the plastic reads as a lighter, less saturated edge. Desaturating as well
-/// as lightening is what keeps it from looking like a white outline drawn on the shell.
+const SURFACE: u32 = 150;
+
+const BOARD: [u8; 3] = [0x2c, 0x96, 0x52];
+const TRACE: [u8; 3] = [0x5a, 0xb4, 0x74];
+const GOLD: [u8; 3] = [0xe6, 0xb4, 0x46];
+
+fn through(plastic: [u8; 3], behind: [u8; 3]) -> [u8; 3] {
+    let filter =
+        |a: [u8; 3], b: [u8; 3]| [0, 1, 2].map(|c| (a[c] as u32 * b[c] as u32 / 255) as u8);
+    lerp(
+        filter(plastic, behind),
+        filter(plastic, plastic),
+        SURFACE,
+        255,
+    )
+}
+
+fn inside(system: System, w: u32, h: u32, x: u32, y: u32) -> Option<[u8; 3]> {
+    let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+    let (x0, x1, top, c0, c1, contacts_from, traces_from) = match system {
+        System::Gba => (0.135, 0.875, 0.231, 0.17, 0.84, 0.85, 0.76),
+        System::Gb | System::Gbc => (0.075, 0.925, 0.07, 0.1, 0.9, 0.905, 0.84),
+    };
+    if !(x0..x1).contains(&fx) || fy < top {
+        return None;
+    }
+    let pitch = (c1 - c0) / 32.0;
+    let on_contact = (c0..c1).contains(&fx) && ((fx - c0) % pitch) < pitch * 0.6;
+    if on_contact && fy >= contacts_from {
+        return Some(GOLD);
+    }
+    if on_contact && ((fx - c0) % pitch) < pitch * 0.2 && fy >= traces_from {
+        Some(TRACE)
+    } else {
+        Some(BOARD)
+    }
+}
+
+fn fleck(x: u32, y: u32) -> bool {
+    let mut h = x.wrapping_mul(0x9e37_79b9) ^ y.wrapping_mul(0x85eb_ca6b);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2c1b_3c6d);
+    h ^= h >> 12;
+    h.is_multiple_of(100)
+}
+
 fn rim_colour(base: [u8; 3]) -> [u8; 3] {
     let mean = (base[0] as u16 + base[1] as u16 + base[2] as u16) / 3;
     base.map(|c| {
@@ -371,17 +487,17 @@ const BEVEL: u32 = 3 * FACE_SCALE;
 
 /// The grip ridge and the thumb notch, cut into the shell. Darkened rather than coloured:
 /// moulded plastic is the same plastic, just turned away from the light.
-fn mould_detail(face: &mut CartFace, shell: &Shell, size: CartSize, system: slot_store::System) {
+fn mould_detail(face: &mut CartFace, shell: &Shell, size: CartSize, system: System) {
     let dark = [
         (shell.colour[0] as f32 * 0.62) as u8,
         (shell.colour[1] as f32 * 0.62) as u8,
         (shell.colour[2] as f32 * 0.62) as u8,
     ];
-    for (px, cover) in face
-        .rgba
-        .chunks_exact_mut(4)
-        .zip(detail_mask(system, size.face_w(), size.face_h()))
-    {
+    for (px, cover) in face.rgba.chunks_exact_mut(4).zip(detail_mask(
+        system,
+        size.face_w(),
+        size.face_h(),
+    )) {
         let a = *cover as u32;
         if a == 0 {
             continue;
@@ -404,14 +520,22 @@ fn recess_label(face: &mut CartFace, shell: &Shell, panel: (u32, u32, u32, u32))
     };
     let dark = shade(shell.colour, 0.55);
     let lit = shade(shell.colour, 1.45);
-
-    let (x0, y0) = (lx - BEVEL, ly - BEVEL);
+    let (x0, y0) = (lx.saturating_sub(BEVEL), ly.saturating_sub(BEVEL));
     let (x1, y1) = (lx + lw + BEVEL, ly + lh + BEVEL);
-    let mut put = |x: u32, y: u32, c: [u8; 3]| {
+    let clear = shell.finish != Finish::Solid;
+    let mut put = |x: u32, y: u32, upper: bool| {
         if x >= face_w || y >= face_h {
             return;
         }
         let d = ((y * face_w + x) * 4) as usize;
+        let c = if clear {
+            let under = [face.rgba[d], face.rgba[d + 1], face.rgba[d + 2]];
+            shade(under, if upper { 0.7 } else { 1.18 })
+        } else if upper {
+            dark
+        } else {
+            lit
+        };
         face.rgba[d] = c[0];
         face.rgba[d + 1] = c[1];
         face.rgba[d + 2] = c[2];
@@ -422,14 +546,13 @@ fn recess_label(face: &mut CartFace, shell: &Shell, panel: (u32, u32, u32, u32))
             if inside {
                 continue;
             }
-            // Which wall a pixel belongs to: the nearer of the two edges it sits between.
             let from_top = y.saturating_sub(y0);
             let from_left = x.saturating_sub(x0);
             let from_bottom = y1.saturating_sub(y + 1);
             let from_right = x1.saturating_sub(x + 1);
             let upper = from_top.min(from_left);
             let lower = from_bottom.min(from_right);
-            put(x, y, if upper <= lower { dark } else { lit });
+            put(x, y, upper <= lower);
         }
     }
 }
@@ -447,7 +570,6 @@ fn paste_label(face: &mut CartFace, label: &[u8], panel: (u32, u32, u32, u32)) {
     let (lx, ly, lw, lh) = panel;
     let face_w = face.w;
     for y in 0..lh {
-        // Past the bottom of the face, so is every row below this one.
         if y + ly >= face.h {
             break;
         }
@@ -456,8 +578,6 @@ fn paste_label(face: &mut CartFace, label: &[u8], panel: (u32, u32, u32, u32)) {
                 break;
             }
             let s = ((y * lw + x) * 4) as usize;
-            // The same mistake from the other side: a label buffer shorter than the panel it
-            // is being pasted into. Clipped too, for the same reason.
             let Some(src) = label.get(s..s + 4) else {
                 break;
             };
@@ -492,7 +612,7 @@ fn card_face(cart: &Cart, shell: &Shell, size: CartSize) -> Option<CartFace> {
     // top and bottom bands are drawn in — so the cart belongs to the same device as the furniture
     // around it. Taken from `housing()` rather than written down, so the two cannot drift apart.
     let light = match cart.system() {
-        slot_store::System::Gba => {
+        System::Gba => {
             let h = crate::slot_chrome::housing();
             Some([(h[0] * 255.0) as u8, (h[1] * 255.0) as u8, (h[2] * 255.0) as u8])
         }
@@ -516,10 +636,11 @@ fn sized_label(title: &str, w: u32, h: u32) -> Vec<u8> {
     }
 
     if let Some(font) = text::label_font() {
-        let layout = text::fit(
+        let layout = text::fit_box(
             font,
             title,
             w.saturating_sub(2 * pad) as f32,
+            h as f32,
             MAX_LINES,
             MAX_PX * k,
             (MIN_PX * k).max(6.0),
@@ -529,8 +650,6 @@ fn sized_label(title: &str, w: u32, h: u32) -> Vec<u8> {
     rgba
 }
 
-/// Hue rotation alone puts yellow and blue at very different luminance, so the ink flips
-/// rather than sitting at one fixed value.
 fn ink(bg: [u8; 3]) -> [u8; 3] {
     let luma = 0.2126 * bg[0] as f32 + 0.7152 * bg[1] as f32 + 0.0722 * bg[2] as f32;
     if luma > 140.0 {

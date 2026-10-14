@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use slot::frontend::Frontend;
 use slot::input::HostInput;
 use slot_gfx::{Compositor, HostSurface, Surface};
@@ -6,6 +8,8 @@ use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
+
+const FRAME: Duration = Duration::from_micros(16_667);
 
 struct Slot {
     gfx: Option<(HostSurface, Compositor)>,
@@ -38,6 +42,8 @@ impl ApplicationHandler for Slot {
             }
         };
         self.frontend.upload_faces(&mut compositor);
+        self.frontend
+            .upload_bezel(&mut compositor, surface.window_size());
         self.gfx = Some((surface, compositor));
     }
 
@@ -50,21 +56,28 @@ impl ApplicationHandler for Slot {
             WindowEvent::CloseRequested => events.exit(),
             WindowEvent::Resized(size) => surface.resize(size),
             WindowEvent::RedrawRequested => {
+                let began = Instant::now();
                 self.frontend.render(compositor, surface.window_size());
-                if let Err(e) = surface.swap() {
+                let swap = std::time::Instant::now();
+                let swapped = surface.swap();
+                slot::latency::swapped(swap.elapsed().as_secs_f64() * 1000.0);
+                if let Err(e) = swapped {
                     eprintln!("slot: {e}");
                     events.exit();
                     return;
                 }
                 surface.request_redraw();
                 self.frontend.advance(&mut self.input);
-                // The simulated platform ends the process outright.
                 if self.frontend.restarting() {
                     self.frontend.restart();
                 }
                 if self.frontend.powering_off() {
                     self.frontend.poweroff();
                     events.exit();
+                    return;
+                }
+                if let Some(left) = FRAME.checked_sub(began.elapsed()) {
+                    std::thread::sleep(left);
                 }
             }
             _ => {}

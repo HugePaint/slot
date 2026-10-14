@@ -1,5 +1,7 @@
 use slot_power::{Battery, Charge};
-use slot_ui::{cluster_h, draw_gauge, Draw, Printed, TexId, BOLT_H, BOLT_W, STATUS_H};
+use slot_ui::{
+    cluster_h, draw_gauge, Draw, Printed, TexId, BOLT_H, BOLT_W, GAUGE_W, STATUS_H, WALL,
+};
 
 /// The band's own right margin, which is what the reading is anchored by: the percent's right
 /// edge lands here and the type grows leftward from it.
@@ -173,6 +175,47 @@ fn nothing_is_drawn_before_the_face_lands() {
         out.is_empty(),
         "something drew against a zero width: {out:?}"
     );
+}
+
+#[test]
+fn the_fill_tracks_the_percent_and_never_leaves_the_capsule() {
+    let mut widths = Vec::new();
+    for percent in [0u8, 1, 50, 99, 100] {
+        let mut out = Vec::new();
+        draw_gauge(
+            24.0,
+            400.0,
+            at(percent, Charge::Discharging),
+            percent_face(),
+            None,
+            &mut out,
+        );
+        let capsule_left = out
+            .iter()
+            .filter_map(|d| match *d {
+                Draw::Rect { x, .. } => Some(x),
+                _ => None,
+            })
+            .fold(f32::MAX, f32::min);
+        let inner_right = capsule_left + GAUGE_W - 2.0 * WALL;
+        let fill = out.iter().find_map(|d| match *d {
+            Draw::Rect { x, w, .. } if (x - (capsule_left + 2.0 * WALL)).abs() < 0.01 => Some(w),
+            _ => None,
+        });
+        if let Some(w) = fill {
+            assert!(
+                capsule_left + 2.0 * WALL + w <= inner_right + 0.01,
+                "a {percent}% fill burst through the capsule's own wall"
+            );
+        }
+        widths.push(fill.unwrap_or(0.0));
+    }
+    for pair in widths.windows(2) {
+        assert!(
+            pair[1] > pair[0],
+            "the fill must grow strictly with the percent, got {widths:?}"
+        );
+    }
 }
 
 /// No gauge is no reading. A device slot has not been ported to yet still has to come up.

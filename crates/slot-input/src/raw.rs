@@ -6,8 +6,6 @@ pub enum Btn {
     Right,
     A,
     B,
-    /// Never reach the core: the GBA has neither button. They exist so the switcher has
-    /// buttons of its own for the undo and the delete.
     X,
     Y,
     L1,

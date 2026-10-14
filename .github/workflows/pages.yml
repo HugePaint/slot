@@ -1,8 +1,5 @@
 name: pages
 
-# The landing page is static, so there is nothing to build: the job hands `site/` to Pages
-# as it sits in the tree. Pushing anything else leaves the deployment alone, because
-# redeploying an unchanged page on every commit only makes the history harder to read.
 on:
   push:
     branches: [main]
@@ -16,8 +13,6 @@ permissions:
   pages: write
   id-token: write
 
-# One deploy at a time, and never cancelling one that is already going out. A cancelled
-# deploy-pages leaves the site on whatever half of the artifact made it.
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -32,8 +27,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Writes the repository's Pages settings into the environment. It is also what fails
-      # loudly, rather than at upload time, when Pages has not been switched to Actions.
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3

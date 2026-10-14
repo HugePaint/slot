@@ -5,8 +5,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Temp, fsync, rename. A reader never observes a half written file, and a power cut
-/// during the write leaves the previous contents rather than a truncated one.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = temp_path(path);
     match write_then_rename(&tmp, path, bytes) {
@@ -16,15 +14,16 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             return Err(e);
         }
     }
-    // The rename itself lives in the directory, so without this the file can survive a
-    // power cut while the name pointing at it does not. Best effort: some filesystems
-    // refuse a directory fsync, and failing the write over that would be worse.
+    sync_dir(path);
+    Ok(())
+}
+
+pub(crate) fn sync_dir(path: &Path) {
     if let Some(dir) = path.parent() {
         if let Ok(d) = File::open(dir) {
             let _ = d.sync_all();
         }
     }
-    Ok(())
 }
 
 fn write_then_rename(tmp: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -35,10 +34,17 @@ fn write_then_rename(tmp: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<(
     std::fs::rename(tmp, path)
 }
 
+const NAME_MAX: usize = 255;
+
 fn temp_path(path: &Path) -> PathBuf {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp = format!(".{name}.{}.{seq}.tmp", std::process::id());
+    let tail = format!(".{}.{seq}.tmp", std::process::id());
+    let mut room = NAME_MAX.saturating_sub(tail.len() + 1).min(name.len());
+    while room > 0 && !name.is_char_boundary(room) {
+        room -= 1;
+    }
+    let tmp = format!(".{}{tail}", &name[..room]);
     match path.parent() {
         Some(dir) => dir.join(tmp),
         None => PathBuf::from(tmp),

@@ -3,16 +3,17 @@ mod common;
 use common::{app_playing_in, app_playing_with, tmp_root_with_carts, StubSnapshot};
 use slot::app::{App, Phase};
 use slot_input::{Action, Btn};
-use slot_store::{Cart, Core, StateRing};
+use slot_store::{Cart, Core, Platform, StateRing};
 
-/// No content root, so nothing this app does can reach a ring.
 fn app_playing(stem: &str) -> App {
     let mut a = App::new(vec![Cart {
+        platform: Platform::Gba,
         initial: slot_store::initial(&slot_store::clean_label(stem)),
         stem: stem.to_string(),
-        rom: format!("Games/{stem}.gba").into(),
+        rom: format!("Games/GBA/{stem}.gba").into(),
         label: None,
         code: String::new(),
+        shell: None,
         title: stem.to_uppercase(),
     }]);
     a.apply(Action::Insert);
@@ -30,8 +31,6 @@ fn double_tap_menu_with_no_states_does_not_open_the_switcher() {
     assert!(matches!(a.phase(), Phase::Playing { .. }));
 }
 
-/// The same no-op, but on a real card with a real cart that simply has never been saved.
-/// This is the path a first-time player takes.
 #[test]
 fn a_cart_that_has_never_been_saved_does_not_open_the_switcher() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -45,7 +44,7 @@ fn saving_pushes_a_polaroid_with_its_picture() {
     let d = tmp_root_with_carts(&["Emerald"]);
     let mut a = app_playing_in(d.path(), "Emerald");
     a.apply(Action::SaveState);
-    let entries = StateRing::new(d.path(), Core::Mgba, "Emerald")
+    let entries = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
         .list()
         .expect("list");
     assert_eq!(entries.len(), 1);
@@ -59,7 +58,6 @@ fn saving_pushes_a_polaroid_with_its_picture() {
     );
 }
 
-/// The stamp is the filename, so two saves inside one second would silently be one save.
 #[test]
 fn two_saves_in_the_same_second_are_two_entries() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -67,7 +65,7 @@ fn two_saves_in_the_same_second_are_two_entries() {
     a.apply(Action::SaveState);
     a.apply(Action::SaveState);
     assert_eq!(
-        StateRing::new(d.path(), Core::Mgba, "Emerald")
+        StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
             .list()
             .expect("list")
             .len(),
@@ -94,7 +92,6 @@ fn a_saved_state_opens_the_switcher_and_a_loads_it_back() {
     );
 }
 
-/// B is the way out, not a second load button.
 #[test]
 fn b_dismisses_the_switcher_without_loading() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -107,7 +104,6 @@ fn b_dismisses_the_switcher_without_loading() {
     assert!(loaded.lock().expect("loaded").is_none());
 }
 
-/// A second double tap of MENU is the same dismissal, per the input map.
 #[test]
 fn menu_dismisses_the_switcher_it_opened() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -118,12 +114,10 @@ fn menu_dismisses_the_switcher_it_opened() {
     assert!(matches!(a.phase(), Phase::Playing { .. }));
 }
 
-/// Left and right walk the ring rather than the shelf behind it, and A loads what they
-/// landed on.
 #[test]
 fn flicking_selects_which_state_a_loads() {
     let d = tmp_root_with_carts(&["Emerald"]);
-    let ring = StateRing::new(d.path(), Core::Mgba, "Emerald");
+    let ring = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
     ring.push(&[1u8; 16], b"png", "2026-08-09_00-00-01")
         .expect("push");
     ring.push(&[2u8; 16], b"png", "2026-08-09_00-00-02")
@@ -139,11 +133,10 @@ fn flicking_selects_which_state_a_loads() {
     );
 }
 
-/// `SELECT+L1` is the no-look load. It takes the newest without opening anything.
 #[test]
 fn load_state_takes_the_newest_entry_without_the_switcher() {
     let d = tmp_root_with_carts(&["Emerald"]);
-    let ring = StateRing::new(d.path(), Core::Mgba, "Emerald");
+    let ring = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
     ring.push(&[1u8; 16], b"png", "2026-08-09_00-00-01")
         .expect("push");
     ring.push(&[2u8; 16], b"png", "2026-08-09_00-00-02")
@@ -158,8 +151,6 @@ fn load_state_takes_the_newest_entry_without_the_switcher() {
     assert!(matches!(a.phase(), Phase::Playing { .. }));
 }
 
-/// The switcher is not a place a cart can be ejected from, and the shelf is not underneath
-/// it either. Both would leave the emulator paused with no way back.
 #[test]
 fn the_switcher_swallows_the_shelf_and_eject_bindings() {
     let d = tmp_root_with_carts(&["Emerald"]);

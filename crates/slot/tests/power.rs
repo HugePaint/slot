@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use common::{
-    app_playing_in, boot, panel, session_with_platform, tmp_root_with_carts,
+    app_playing_in, boot, clocked, panel, session_with_platform, tmp_root_with_carts,
     tmp_root_with_real_carts, StubSnapshot,
 };
 use slot::app::Phase;
@@ -12,8 +12,10 @@ use slot::emu::Speed;
 use slot::session::Session;
 use slot_gfx::Draw;
 use slot_input::{Action, Btn, Millis, RawEvent, POWER_HOLD_MS};
-use slot_store::{read_slot_state, write_slot_state, Core, SlotState, StateRing};
+use slot_store::{read_slot_state, write_slot_state, Core, Platform, SlotState, StateRing};
 use slot_ui::PowerChoice;
+
+use slot::link_radio::{RadioJob, RadioJobs};
 
 const FRAME_MS: Millis = 16;
 const DT: f32 = 1.0 / 60.0;
@@ -23,7 +25,7 @@ fn lid_close_flushes_resume_before_dozing() {
     let d = tmp_root_with_carts(&["Emerald"]);
     let mut a = app_playing_in(d.path(), "Emerald");
     a.apply(Action::LidClose);
-    let r = StateRing::new(d.path(), Core::Mgba, "Emerald");
+    let r = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
     assert!(
         r.read_resume().unwrap().is_some(),
         "state must be durable before doze"
@@ -57,8 +59,6 @@ fn doze_timeout_powers_off_with_the_cart_still_seated() {
     );
 }
 
-/// Closing the lid on an empty slot is still a doze. There is nothing to flush and nothing
-/// to wake back into.
 #[test]
 fn lid_close_on_the_shelf_wakes_back_to_the_shelf() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -66,16 +66,16 @@ fn lid_close_on_the_shelf_wakes_back_to_the_shelf() {
     a.set_snapshot(StubSnapshot::boxed());
     a.apply(Action::LidClose);
     assert!(matches!(a.phase(), Phase::Doze { cart: None }));
-    assert!(StateRing::new(d.path(), Core::Mgba, "Emerald")
-        .read_resume()
-        .unwrap()
-        .is_none());
+    assert!(
+        StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
+            .read_resume()
+            .unwrap()
+            .is_none()
+    );
     a.apply(Action::LidOpen);
     assert!(matches!(a.phase(), Phase::Shelf));
 }
 
-/// The switcher is a pause over the game, so the lid closes on the game underneath it and
-/// opens back onto it.
 #[test]
 fn lid_close_over_the_switcher_wakes_into_the_game() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -86,7 +86,7 @@ fn lid_close_over_the_switcher_wakes_into_the_game() {
     a.apply(Action::LidOpen);
     assert!(matches!(a.phase(), Phase::Playing { .. }));
     assert_eq!(
-        StateRing::new(d.path(), Core::Mgba, "Emerald")
+        StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
             .list()
             .unwrap()
             .len(),
@@ -95,9 +95,6 @@ fn lid_close_over_the_switcher_wakes_into_the_game() {
     );
 }
 
-/// A dozing app is still ticking, which is the only clock the timeout has — and still
-/// drawing 400-700 mA behind the dark panel, which is why the timeout ends in a real power
-/// off rather than a sleep this board could never wake itself from.
 #[test]
 fn a_doze_that_outlasts_the_timeout_powers_off_by_itself() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -123,7 +120,6 @@ fn a_stray_doze_timeout_does_not_power_off_a_running_game() {
     assert!(matches!(a.phase(), Phase::Playing { .. }));
 }
 
-/// The panel comes up at the level the card remembers, not at whatever the kernel left it.
 #[test]
 fn the_backlight_follows_brightness_from_boot() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -145,13 +141,6 @@ fn the_backlight_follows_brightness_from_boot() {
     assert_eq!(step.load(Ordering::Relaxed), 4);
 }
 
-/// The menu covers whatever was on screen rather than tinting it. It is a decision about the
-/// device, not something happening inside the game, and a half-visible cart behind it reads
-/// as the game still being in charge.
-///
-/// Drawn in the case's own materials — the plate is housing, the keyline is edge, the row in
-/// hand is recess — so a screen that only appears for a couple of seconds still belongs to
-/// the same object as the shelf and the slot.
 #[test]
 fn the_menu_covers_the_screen_in_the_case_materials() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -172,9 +161,6 @@ fn the_menu_covers_the_screen_in_the_case_materials() {
         }
         other => panic!("the menu drew {other:?} rather than a ground"),
     }
-    // Only the ground is reachable here: the plate is sized from the uploaded row faces, and
-    // a unit test has no compositor to upload them with. What this does prove is that the
-    // menu replaces the screen rather than sitting over a game still being drawn.
     assert_eq!(
         out.len(),
         1,
@@ -182,10 +168,6 @@ fn the_menu_covers_the_screen_in_the_case_materials() {
     );
 }
 
-/// rcK stops the frontend and unloads the GPU module before the kernel is allowed to halt,
-/// which takes about five seconds on this hardware. A panel that simply goes black for five
-/// seconds is one the user reads as hung — this device has already been opened once over
-/// exactly that confusion — so the shutdown says so, over whatever was on screen.
 #[test]
 fn a_power_off_draws_a_shutdown_screen_over_everything() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -204,8 +186,6 @@ fn a_power_off_draws_a_shutdown_screen_over_everything() {
         }
         other => panic!("the shutdown drew {other:?} rather than a panel of black"),
     }
-    // One draw, not two: the line itself is a texture uploaded by the binary at boot, and a
-    // unit test has no compositor to upload it with. The screen is still correct without it.
     assert_eq!(
         out.len(),
         1,
@@ -213,9 +193,6 @@ fn a_power_off_draws_a_shutdown_screen_over_everything() {
     );
 }
 
-/// A held POWER offers a choice rather than committing to one. Everything reachable from
-/// here costs the user something — an instant resume, a three second boot, or a shutdown —
-/// so the button raises the question and A answers it.
 #[test]
 fn a_hold_opens_the_menu_and_commits_nothing() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -224,7 +201,7 @@ fn a_hold_opens_the_menu_and_commits_nothing() {
     assert_eq!(a.power_menu(), Some(0), "the menu opens on Restart");
     assert!(!a.powering_off() && !a.restarting());
     assert!(
-        StateRing::new(d.path(), Core::Mgba, "Emerald")
+        StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
             .read_resume()
             .unwrap()
             .is_some(),
@@ -233,20 +210,19 @@ fn a_hold_opens_the_menu_and_commits_nothing() {
 }
 
 #[test]
-fn the_menu_moves_and_stops_at_both_ends() {
+fn the_menu_moves_and_wraps_at_both_ends() {
     let d = tmp_root_with_carts(&["Emerald"]);
     let mut a = app_playing_in(d.path(), "Emerald");
+    let last = PowerChoice::ALL.len() - 1;
     a.apply(Action::PowerHold);
     a.apply(Action::GbaDown(Btn::Up));
-    assert_eq!(a.power_menu(), Some(0), "it does not wrap off the top");
-    for _ in 0..PowerChoice::ALL.len() + 1 {
+    assert_eq!(a.power_menu(), Some(last), "up from the top did not wrap");
+    a.apply(Action::GbaDown(Btn::Down));
+    assert_eq!(a.power_menu(), Some(0), "down from the bottom did not wrap");
+    for i in 1..=last {
         a.apply(Action::GbaDown(Btn::Down));
+        assert_eq!(a.power_menu(), Some(i));
     }
-    assert_eq!(
-        a.power_menu(),
-        Some(PowerChoice::ALL.len() - 1),
-        "nor off the bottom"
-    );
 }
 
 #[test]
@@ -285,11 +261,6 @@ fn each_row_commits_to_its_own_outcome() {
     }
 }
 
-/// The decision and the moment the machine may stop are different things. Rendering the
-/// shutdown screen out of band — an extra draw and swap between the choice and `poweroff` —
-/// hung the device on a GPU that was about to be torn down: slot never reached `poweroff` at
-/// all, init was never signalled, and it took the PMIC held down to recover. So the ordinary
-/// loop draws the screen and the binary waits for it.
 #[test]
 fn the_shutdown_screen_is_up_before_the_machine_may_stop() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -311,20 +282,10 @@ fn the_shutdown_screen_is_up_before_the_machine_may_stop() {
         "and the screen is what the loop is drawing in the meantime"
     );
 
-    // Absolute, not a delta: `tick_ms` takes the later of the two, so a small number is a
-    // no-op against whatever clock the harness already left behind.
     a.tick_ms(600_000);
     assert!(a.ready_to_power_off(), "then it may stop");
 }
 
-/// The reported hang: close the lid, wait out the doze, and the device sits there until the
-/// lid is opened again — at which point it powers off, having thrown away the session the
-/// user just came back for.
-///
-/// `doze_expired` is a level rather than an edge, and `begin_power_off` leaves the phase on
-/// `Doze`, so `timers` re-armed the shutdown every frame and `act_at` walked ahead of the
-/// clock forever. The 250 ms the screen is meant to be up became a deadline that could never
-/// arrive.
 #[test]
 fn a_dozing_device_powers_off_by_itself_rather_than_waiting_for_the_lid() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -344,11 +305,6 @@ fn a_dozing_device_powers_off_by_itself_rather_than_waiting_for_the_lid() {
     );
 }
 
-/// The menu is an overlay rather than a phase, so the phase stays `Playing` underneath it and
-/// `sync_speed` — which reads only the phase — left the core running flat out behind a screen
-/// that had replaced it. The game was still being heard while the user read a question about
-/// turning the device off. The switcher is the frontend's other overlay over a live game and
-/// it has always paused; this is the same idea, and was simply never wired.
 #[test]
 fn the_power_menu_holds_the_core_still() {
     let d = tmp_root_with_real_carts(&["Advance Wars", "Emerald"]);
@@ -366,8 +322,6 @@ fn the_power_menu_holds_the_core_still() {
     await_paused(&mut s);
 }
 
-/// The same for the screen after the choice. A device with five seconds of rcK ahead of it is
-/// not one that should still be playing the game it has already said goodbye to.
 #[test]
 fn a_committed_shutdown_holds_the_core_still() {
     let d = tmp_root_with_real_carts(&["Advance Wars", "Emerald"]);
@@ -383,8 +337,90 @@ fn a_committed_shutdown_holds_the_core_still() {
     await_paused(&mut s);
 }
 
-/// Waits for the worker to report that it read `Paused`, rather than for the frame count to
-/// sit still: a descheduled worker and a stopped one look identical from a count.
+#[test]
+fn power_pressed_while_dozing_lights_the_panel_before_the_menu_is_raised() {
+    let d = tmp_root_with_carts(&["Emerald"]);
+    clocked(d.path());
+    let mut s = Session::boot(d.path().to_path_buf());
+    let (power, backlight) = panel(d.path(), Duration::from_secs(180));
+    s.app_mut().set_power(power);
+    let lit = backlight.load(Ordering::Relaxed);
+    assert!(
+        lit > 0,
+        "the panel never came on, so going dark proves nothing"
+    );
+
+    let mut now = 0;
+    event(&mut s, RawEvent::Down(Btn::Power), &mut now);
+    event(&mut s, RawEvent::Up(Btn::Power), &mut now);
+    assert!(
+        matches!(s.app().phase(), Phase::Doze { .. }),
+        "the device never dozed"
+    );
+    assert_eq!(
+        backlight.load(Ordering::Relaxed),
+        0,
+        "the doze left the panel lit"
+    );
+
+    event(&mut s, RawEvent::Down(Btn::Power), &mut now);
+    assert_eq!(
+        backlight.load(Ordering::Relaxed),
+        lit,
+        "the panel is still dark under the thumb trying to wake it"
+    );
+    assert!(
+        !matches!(s.app().phase(), Phase::Doze { .. }),
+        "the panel came on over a device still dozing behind it"
+    );
+
+    let pressed = now;
+    while now < pressed + POWER_HOLD_MS + FRAME_MS {
+        step(&mut s, &mut now);
+    }
+    assert_eq!(
+        s.app().power_menu(),
+        Some(0),
+        "the hold no longer raises the menu"
+    );
+    assert_eq!(
+        backlight.load(Ordering::Relaxed),
+        lit,
+        "the menu is up on a panel nobody can see"
+    );
+}
+
+#[test]
+fn the_press_that_woke_the_panel_does_not_doze_again_when_it_is_let_go() {
+    let d = tmp_root_with_carts(&["Emerald"]);
+    clocked(d.path());
+    let mut s = Session::boot(d.path().to_path_buf());
+    let (power, backlight) = panel(d.path(), Duration::from_secs(180));
+    s.app_mut().set_power(power);
+    let lit = backlight.load(Ordering::Relaxed);
+
+    let mut now = 0;
+    event(&mut s, RawEvent::Down(Btn::Power), &mut now);
+    event(&mut s, RawEvent::Up(Btn::Power), &mut now);
+    assert!(matches!(s.app().phase(), Phase::Doze { .. }));
+
+    event(&mut s, RawEvent::Down(Btn::Power), &mut now);
+    event(&mut s, RawEvent::Up(Btn::Power), &mut now);
+    assert!(
+        !matches!(s.app().phase(), Phase::Doze { .. }),
+        "the tap that woke the device put it straight back to sleep"
+    );
+    assert_eq!(backlight.load(Ordering::Relaxed), lit);
+
+    event(&mut s, RawEvent::Down(Btn::Power), &mut now);
+    event(&mut s, RawEvent::Up(Btn::Power), &mut now);
+    assert!(
+        matches!(s.app().phase(), Phase::Doze { .. }),
+        "POWER stopped being able to put the device out"
+    );
+    assert_eq!(backlight.load(Ordering::Relaxed), 0);
+}
+
 fn await_paused(s: &mut Session) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while s.observed_speed() != Some(Speed::Paused) {
@@ -396,7 +432,6 @@ fn await_paused(s: &mut Session) {
     }
 }
 
-/// POWER down, then frames until the gesture layer's own tick raises the menu.
 fn hold_power(s: &mut Session, now: &mut Millis) {
     let pressed = *now;
     event(s, RawEvent::Down(Btn::Power), now);
@@ -417,7 +452,6 @@ fn event(s: &mut Session, ev: RawEvent, now: &mut Millis) {
     s.update(DT);
 }
 
-/// Puts the selected cart in and waits out the load, which happens on its own thread.
 fn play(s: &mut Session, now: &mut Millis) {
     event(s, RawEvent::Down(Btn::A), now);
     event(s, RawEvent::Up(Btn::A), now);
@@ -427,10 +461,58 @@ fn play(s: &mut Session, now: &mut Millis) {
         step(s, now);
         std::thread::sleep(Duration::from_millis(1));
     }
-    // The worker has to have taken a turn at Normal before a test may claim it stopped.
     let deadline = Instant::now() + Duration::from_secs(5);
     while s.observed_speed() != Some(Speed::Normal) {
         assert!(Instant::now() < deadline, "the core never started");
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+#[derive(Clone, Default)]
+struct RadioLog(std::sync::Arc<std::sync::Mutex<Vec<RadioJob>>>);
+
+impl RadioLog {
+    fn jobs(&self) -> Vec<RadioJob> {
+        self.0.lock().expect("radio log").clone()
+    }
+}
+
+impl RadioJobs for RadioLog {
+    fn ask(&mut self, job: RadioJob) {
+        self.0.lock().expect("radio log").push(job);
+    }
+
+    fn warmed(&self) -> bool {
+        false
+    }
+}
+
+#[test]
+fn a_shut_lid_cools_the_radio() {
+    let d = tmp_root_with_carts(&["Emerald"]);
+    let mut a = app_playing_in(d.path(), "Emerald");
+    let log = RadioLog::default();
+    a.set_radio_jobs(Box::new(log.clone()));
+    a.apply(Action::LidClose);
+    assert!(
+        log.jobs().contains(&RadioJob::Cool),
+        "the lid closed with the radio left loaded behind it"
+    );
+}
+
+#[test]
+fn a_shut_lid_over_a_session_takes_its_network_down_too() {
+    let d = tmp_root_with_carts(&["Emerald"]);
+    let mut a = app_playing_in(d.path(), "Emerald");
+    let log = RadioLog::default();
+    a.set_radio_jobs(Box::new(log.clone()));
+    a.begin_link(0);
+    a.apply(Action::LidClose);
+    let jobs = log.jobs();
+    assert_eq!(
+        jobs.first(),
+        Some(&RadioJob::Down),
+        "the session's own network must come down before the driver does: {jobs:?}"
+    );
+    assert!(jobs.contains(&RadioJob::Cool));
 }

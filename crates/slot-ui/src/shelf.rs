@@ -1,12 +1,14 @@
 use std::path::Path;
 
-use slot_gfx::{Draw, TexId, OUT_W};
+use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
 use slot_store::Cart;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::cart::{label_colour, label_text, size_for, CartSize};
+use crate::cart::{gb_shell_of, label_colour, label_text, size_for, CartSize, CART_H};
 use slot_store::System;
 use crate::hud::Millis;
-use crate::slot_chrome::draw_empty_slot;
+use crate::silhouette::GbShell;
+use crate::slot_chrome::{draw_empty_slot, MOUTH_H};
 
 /// The centre cart is drawn larger than the row so it reads as the one in hand; the
 /// neighbours keep their full size but are pushed to the edges (see the `CartSize` pitch). 1.5
@@ -20,24 +22,43 @@ pub const CENTER_SCALE: f32 = 1.5;
 /// `CENTER_SCALE`: the app derives how much further to dim the neighbours from it, and that
 /// arithmetic has to follow this number rather than be written down against an old one.
 pub const SIDE_ALPHA: f32 = 0.7;
-/// Carts stand on the row rather than float: the foot stays put as a cart shrinks away.
-/// Where the row's feet stand — the carts stand on the row rather than float on it. Derived
-/// from the cart's height, so a taller shell stands lower and the row keeps its proportions.
-pub(crate) fn foot_y(size: CartSize) -> f32 {
-    size.foot_y()
+
+static SLACK: AtomicU32 = AtomicU32::new(0);
+
+pub fn set_shelf_slack(px: f32) {
+    SLACK.store(px.max(0.0).to_bits(), Ordering::Relaxed);
+}
+
+fn raise() -> f32 {
+    f32::from_bits(SLACK.load(Ordering::Relaxed)) / 2.0
+}
+
+pub fn panel_middle_y() -> f32 {
+    OUT_H as f32 / 2.0 + raise()
+}
+
+/// Portrait shells sit higher in the bay; landscape shells keep the Advance row. `raise` is the
+/// RG28XX slack, applied on top of that.
+pub fn rest_y(h: f32) -> f32 {
+    let y = if h > CART_H as f32 {
+        (OUT_H as f32 - MOUTH_H - h) / 2.0
+    } else {
+        (OUT_H + CART_H) as f32 / 2.0 - h
+    };
+    y - raise()
+}
+
+pub fn foot_y(h: f32) -> f32 {
+    rest_y(h) + h
 }
 /// Critically damped, so a flick lands on a cart instead of bouncing past and returning.
 const OMEGA: f32 = 16.0;
-/// How far the cart next to the selection is pushed aside as the chosen one goes in. Enough
-/// to clear the frame from where it stands.
 const PART: f32 = 130.0;
 /// How much a face-less cart is stretched along the row while the ring glides. Small on
 /// purpose: a cart stretched far enough to notice as a *shape* stops reading as a cart, and the
 /// point is speed rather than distortion. Exactly 1 at rest, so a still row is untouched.
 const SMEAR: f32 = 1.12;
 
-/// Slots considered either side of the selection. Two reach the edges of a 720 row, the
-/// third covers the lag while the spring is still catching up with a flick.
 const SLOTS: i32 = 3;
 
 /// How far a cart is drawn from its resting place at the top of a system-shelf swap beat, in
@@ -62,9 +83,7 @@ pub struct Motion {
 
 /// Before the first repeat. Long enough that a press meaning one cart cannot become two.
 const REPEAT_DELAY_MS: Millis = 400;
-/// Between repeats after that. Fast enough to cross a thirty cart library, slow enough to
-/// stop on one.
-const REPEAT_MS: Millis = 110;
+const REPEAT_MS: [Millis; 4] = [110, 85, 65, 50];
 
 /// A letter jump's own travel, played by hand rather than by the spring.
 ///
@@ -152,14 +171,18 @@ pub struct Shelf {
     /// The cart silhouette in black, drawn under a dimmed cart. One texture for the whole
     /// row: every cart is the same shape.
     shadow: Option<TexId>,
+    gb_shadow: Option<TexId>,
+    gbc_shadow: Option<TexId>,
+    shells: Vec<Option<GbShell>>,
     /// A cart with a blank label, drawn for a cart whose own face is not built yet. One texture
     /// for the whole row for the same reason `shadow` is one — until the label goes on they are
     /// all the same cart — and it is what a jump across the alphabet shows sliding past.
     placeholder: Option<TexId>,
+    ride: f32,
     vel: f32,
-    /// The direction being held and when it next repeats. Repeat lives here rather than in
-    /// the gesture layer so nothing in game starts auto firing.
-    held: Option<(i32, Millis)>,
+    /// The direction being held, when it next repeats, and how many repeats have fired.
+    /// Repeat lives here rather than in the gesture layer so nothing in game starts auto firing.
+    held: Option<(i32, Millis, usize)>,
     /// A letter jump in flight. While one is running it owns `scroll` and the spring stands
     /// down; a cart step drops it so the arrows always answer immediately.
     glide: Option<Glide>,
@@ -194,6 +217,8 @@ impl Shelf {
             pos_in_view[i] = p as u32;
         }
         Shelf {
+            shells: carts.iter().map(gb_shell_of).collect(),
+            faces: vec![None; carts.len()],
             carts,
             machines,
             folders,
@@ -204,9 +229,11 @@ impl Shelf {
             view,
             index: 0,
             scroll: 0.0,
-            faces: Vec::new(),
             shadow: None,
+            gb_shadow: None,
+            gbc_shadow: None,
             placeholder: None,
+            ride: 0.0,
             vel: 0.0,
             held: None,
             glide: None,
@@ -526,12 +553,118 @@ impl Shelf {
         self.view.len()
     }
 
+    pub fn select(&mut self, i: usize) {
+        let n = self.view.len();
+        self.index = if n == 0 { 0 } else { i.min(n - 1) };
+        self.scroll = self.index as f32;
+        self.ride = self.index as f32;
+        self.vel = 0.0;
+        self.glide = None;
+    }
+
+    pub fn set_gb_shadow(&mut self, shell: GbShell, face: TexId) {
+        match shell {
+            GbShell::Notched => self.gb_shadow = Some(face),
+            GbShell::Rounded => self.gbc_shadow = Some(face),
+        }
+    }
+
+    pub fn face(&self, i: usize) -> Option<TexId> {
+        self.face_of(i)
+    }
+
+    pub fn take_face(&mut self, i: usize) -> Option<TexId> {
+        self.faces.get_mut(i).and_then(Option::take)
+    }
+
+    pub fn on_screen(&self) -> Vec<usize> {
+        self.around(SLOTS)
+    }
+
+    pub fn around(&self, radius: i32) -> Vec<usize> {
+        let mut out = Vec::new();
+        for step in 0..=radius {
+            for off in [step, -step] {
+                if let Some(i) = self.cart_at_offset(off) {
+                    if !out.contains(&i) {
+                        out.push(i);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     pub fn left(&mut self) {
         self.step(-1);
     }
 
     pub fn right(&mut self) {
         self.step(1);
+    }
+
+    pub fn jump_next_letter(&mut self) {
+        self.jump(1);
+    }
+
+    pub fn jump_prev_letter(&mut self) {
+        self.jump(-1);
+    }
+
+    fn start_of_letter(&self, from: usize) -> usize {
+        let n = self.carts.len();
+        let letter = slot_store::initial(&self.carts[from].stem);
+        let mut at = from;
+        for _ in 0..n {
+            let before = (at as i32 - 1).rem_euclid(n as i32) as usize;
+            if slot_store::initial(&self.carts[before].stem) != letter {
+                break;
+            }
+            at = before;
+        }
+        at
+    }
+
+    fn jump(&mut self, dir: i32) {
+        let n = self.carts.len();
+        if n < 2 {
+            return;
+        }
+        let wrap = |i: i32| i.rem_euclid(n as i32) as usize;
+        let here = slot_store::initial(&self.carts[self.index].stem);
+        if self
+            .carts
+            .iter()
+            .all(|c| slot_store::initial(&c.stem) == here)
+        {
+            return;
+        }
+        let target = match dir > 0 {
+            true => {
+                let mut at = self.index;
+                for _ in 0..n {
+                    at = wrap(at as i32 + 1);
+                    if slot_store::initial(&self.carts[at].stem) != here {
+                        break;
+                    }
+                }
+                at
+            }
+            false => {
+                let start = self.start_of_letter(self.index);
+                match start == self.index {
+                    true => self.start_of_letter(wrap(start as i32 - 1)),
+                    false => start,
+                }
+            }
+        };
+        let ahead = (target as i32 - self.index as i32).rem_euclid(n as i32);
+        let delta = match dir > 0 {
+            true => ahead,
+            false => ahead - n as i32,
+        };
+        self.index = target;
+        self.ride += delta as f32;
     }
 
     pub fn hold_left(&mut self, now: Millis) {
@@ -542,11 +675,9 @@ impl Shelf {
         self.hold(1, now);
     }
 
-    /// The press moves a cart itself, so the repeat is what the delay is measured from
-    /// rather than what it produces.
     fn hold(&mut self, by: i32, now: Millis) {
         self.step(by);
-        self.held = Some((by, now + REPEAT_DELAY_MS));
+        self.held = Some((by, now + REPEAT_DELAY_MS, 0));
     }
 
     pub fn release_left(&mut self) {
@@ -557,30 +688,26 @@ impl Shelf {
         self.release(1);
     }
 
-    /// Only the direction that is being held stops it. Letting go of the other one is a
-    /// change of direction the shelf has already acted on.
     fn release(&mut self, by: i32) {
-        if matches!(self.held, Some((held, _)) if held == by) {
+        if matches!(self.held, Some((held, _, _)) if held == by) {
             self.held = None;
         }
     }
 
-    /// Whatever is held, let go of. Nothing on screen is holding it.
     pub fn release_hold(&mut self) {
         self.held = None;
     }
 
-    /// Fires the repeat. Due from `now` rather than from the deadline it passed, so a frame
-    /// the app was late for costs one cart instead of a burst of catching up.
     pub fn tick(&mut self, now: Millis) {
-        let Some((by, due)) = self.held else {
+        let Some((by, due, fired)) = self.held else {
             return;
         };
         if now < due {
             return;
         }
         self.step(by);
-        self.held = Some((by, now + REPEAT_MS));
+        let rate = REPEAT_MS[fired.min(REPEAT_MS.len() - 1)];
+        self.held = Some((by, now + rate, fired + 1));
     }
 
     fn step(&mut self, by: i32) {
@@ -592,24 +719,19 @@ impl Shelf {
         // gliding is dropped so the spring takes the row from wherever the glide left it.
         self.glide = None;
         self.index = (self.index as i32 + by).rem_euclid(n as i32) as usize;
+        self.ride += by as f32;
     }
 
-    /// Where the spring is heading, in the continuous coordinate `scroll` lives in. The row
-    /// is a ring, so the selected cart has an image every `n` slots; this is the one nearest
-    /// where the row already is, which is what stops a wrap unwinding the whole row.
     pub fn scroll_target(&self) -> f32 {
         let n = self.view.len();
         if n == 0 {
             return 0.0;
         }
+        let from = self.ride;
         let n = n as f32;
-        self.scroll + (self.index as f32 - self.scroll + n / 2.0).rem_euclid(n) - n / 2.0
+        from + (self.index as f32 - from + n / 2.0).rem_euclid(n) - n / 2.0
     }
 
-    /// The cart `off` slots right of the selection. `None` when the row is empty, or when
-    /// this slot would repeat a cart another slot is already showing: with two carts the
-    /// left and right neighbours are the same one, and a row holding it twice reads as a
-    /// bug. The row is left with a gap instead.
     pub fn cart_at_offset(&self, off: i32) -> Option<usize> {
         let n = self.view.len() as i32;
         if n == 0 {
@@ -618,6 +740,18 @@ impl Shelf {
         let r = off.rem_euclid(n);
         let nearest = if r * 2 > n { r - n } else { r };
         (nearest == off).then(|| self.view[(self.index as i32 + off).rem_euclid(n) as usize])
+    }
+
+    pub fn selected_at(&self) -> (f32, f32) {
+        let size = self
+            .current_cart()
+            .map(|c| size_for(c.system()))
+            .unwrap_or_else(|| size_for(System::Gba));
+        let w = size.w as f32;
+        let offset = self.scroll_target() - self.scroll;
+        let t = offset.abs().min(1.0);
+        let scale = size.middle + (size.side - size.middle) * t;
+        (OUT_W as f32 / 2.0 + offset * w - w * scale / 2.0, scale)
     }
 
     pub fn update(&mut self, dt: f32) {
@@ -643,28 +777,11 @@ impl Shelf {
         self.scroll += self.vel * dt;
     }
 
-    /// The shelf screen: the row of carts and the slot under it. What is printed on the case
-    /// is drawn after this, by whoever holds the type.
     pub fn draw(&self, shake: f32, out: &mut Vec<Draw>) {
         self.draw_row(None, shake, 0.0, 1.0, out);
         draw_empty_slot(out);
     }
 
-    /// The row alone. The cart on its way into the slot is drawn by the chrome, at the same
-    /// place the row would draw it; leaving it in the row as well puts two of one cart on
-    /// screen and the travel then reads as a copy sliding away from the original.
-    ///
-    /// `shake` displaces the carts and nothing else. On the shelf the frame is mostly
-    /// backdrop, so shaking that slides the letterbox in at the edges rather than reading as
-    /// a refusal.
-    ///
-    /// `recede` clears the row for the cart going into the slot: 0.0 leaves it alone, 1.0
-    /// has every other cart gone. They part outwards rather than fading in place, so the row
-    /// reads as making way for the one that was chosen.
-    ///
-    /// `dim` darkens the faces further and nothing else: 1.0 leaves them as `recede` has them.
-    /// The black under a dimmed cart stays as `recede` alone makes it, so a dimmed cart reads
-    /// as a cart in shadow rather than a ghost over the wallpaper.
     pub fn draw_row(
         &self,
         hidden: Option<&str>,
@@ -832,7 +949,7 @@ impl Shelf {
             // opens rather than sliding sideways.
             let away = offset.signum() * (1.0 + offset.abs());
             let x = OUT_W as f32 / 2.0 + offset * size.pitch - w / 2.0 + away * PART * recede;
-            let mut y = foot_y(size) - h;
+            let mut y = size.foot_y() - h;
             // The system-shelf swap, when one is running. The centre cart leads the beat and
             // each cart further out follows it — drawn up and away on the way out, fallen back
             // from above on the way in — so the row moves in order rather than all at once.

@@ -1,11 +1,13 @@
-use slot_store::{core_for, read_selected_cores, Core};
+use slot_store::{
+    core_for, core_for_platform, read_selected_cores, write_selected_core, Core, Platform,
+};
 use tempfile::tempdir;
 
 fn root_with(ini: Option<&str>) -> tempfile::TempDir {
     let d = tempdir().unwrap();
-    std::fs::create_dir(d.path().join("System")).unwrap();
+    std::fs::create_dir(d.path().join("Config")).unwrap();
     if let Some(text) = ini {
-        std::fs::write(d.path().join("System/selected_core.ini"), text).unwrap();
+        std::fs::write(d.path().join("Config/selected_core.txt"), text).unwrap();
     }
     d
 }
@@ -32,8 +34,6 @@ fn an_unlisted_stem_defaults_to_mgba() {
     assert_eq!(core_for(d.path(), "Metroid Fusion"), Core::Mgba);
 }
 
-/// A card is user editable. Every one of these is a typo someone will make, and not one
-/// of them may cost them their shelf.
 #[test]
 fn malformed_lines_are_ignored_rather_than_fatal() {
     let d = root_with(Some(concat!(
@@ -69,6 +69,28 @@ fn a_later_duplicate_wins() {
 }
 
 #[test]
+fn the_last_line_for_a_cart_wins_even_when_it_is_the_typo() {
+    let d = root_with(Some("Emerald = gpsp\nEmerald = notacore\n"));
+    assert_eq!(
+        core_for(d.path(), "Emerald"),
+        Core::Mgba,
+        "a line the later one superseded is still in force"
+    );
+    assert_eq!(
+        read_selected_cores(d.path()).get("Emerald"),
+        None,
+        "the map and core_for read the same two lines differently"
+    );
+
+    let d = root_with(Some("Emerald = notacore\nEmerald = gpsp\n"));
+    assert_eq!(core_for(d.path(), "Emerald"), Core::Gpsp);
+    assert_eq!(
+        read_selected_cores(d.path()).get("Emerald"),
+        Some(&Core::Gpsp)
+    );
+}
+
+#[test]
 fn core_names_round_trip() {
     for c in Core::ALL {
         assert_eq!(Core::parse(c.as_str()), Some(c));
@@ -99,7 +121,7 @@ fn writing_a_core_replaces_that_carts_line_and_leaves_the_rest_alone() {
     )));
     slot_store::write_selected_core(d.path(), "Emerald", Core::Gpsp).unwrap();
 
-    let text = std::fs::read_to_string(d.path().join("System/selected_core.ini")).unwrap();
+    let text = std::fs::read_to_string(d.path().join("Config/selected_core.txt")).unwrap();
     assert!(
         text.contains("# my notes"),
         "a hand-written comment was destroyed"
@@ -127,11 +149,56 @@ fn writing_a_core_appends_a_cart_the_file_has_never_seen() {
 
 #[test]
 fn writing_the_default_still_records_it() {
-    // Not a no-op: a cart set to gpsp and then back to mgba must actually change, and the
-    // absence of a line means "default", which is the same answer for a different reason.
     let d = root_with(Some("Emerald = gpsp\n"));
     slot_store::write_selected_core(d.path(), "Emerald", Core::Mgba).unwrap();
     assert_eq!(core_for(d.path(), "Emerald"), Core::Mgba);
-    let text = std::fs::read_to_string(d.path().join("System/selected_core.ini")).unwrap();
+    let text = std::fs::read_to_string(d.path().join("Config/selected_core.txt")).unwrap();
     assert!(text.contains("Emerald = mgba"));
+}
+
+#[test]
+fn every_platform_defaults_to_mgba() {
+    let d = tempfile::tempdir().unwrap();
+    assert_eq!(
+        core_for_platform(d.path(), "Tetris", Platform::Gb),
+        Core::Mgba
+    );
+    assert_eq!(
+        core_for_platform(d.path(), "Tetris Chromatic", Platform::Gbc),
+        Core::Mgba
+    );
+    assert_eq!(
+        core_for_platform(d.path(), "Emerald", Platform::Gba),
+        Core::Mgba
+    );
+}
+
+#[test]
+fn a_cart_can_ask_for_a_non_default_core_by_hand() {
+    let d = tempfile::tempdir().unwrap();
+    write_selected_core(d.path(), "Emerald", Core::Gpsp).unwrap();
+    assert_ne!(Core::default_for(Platform::Gba), Core::Gpsp);
+    assert_eq!(
+        core_for_platform(d.path(), "Emerald", Platform::Gba),
+        Core::Gpsp
+    );
+}
+
+#[test]
+fn a_line_naming_a_core_the_platform_cannot_run_is_dropped() {
+    let d = tempfile::tempdir().unwrap();
+    write_selected_core(d.path(), "Tetris", Core::Gpsp).unwrap();
+    assert_eq!(
+        core_for_platform(d.path(), "Tetris", Platform::Gb),
+        Core::Mgba
+    );
+    assert_eq!(
+        core_for_platform(d.path(), "Tetris", Platform::Gbc),
+        Core::Mgba
+    );
+}
+
+#[test]
+fn the_picker_board_has_exactly_two_sockets() {
+    assert_eq!(Core::ALL.len(), 2);
 }

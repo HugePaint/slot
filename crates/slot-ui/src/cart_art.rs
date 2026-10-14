@@ -465,8 +465,9 @@ impl Art {
                         },
                         crate::palette::Mode::Dark => {
                             let c = match shell.finish {
-                                Finish::Solid => shell.colour,
-                                Finish::Translucent => shell.colour,
+                                Finish::Solid | Finish::Translucent | Finish::Glitter => {
+                                    shell.colour
+                                }
                             };
                             (c, (luma / self.luma).clamp(0.0, 1.6))
                         }

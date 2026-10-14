@@ -1,12 +1,6 @@
 (function(){
   "use strict";
 
-  /* The device art lives in device.svg but has to end up INSIDE this document. Its
-     gradients read CSS custom properties (.sl { stop-color: var(--shell-light) } and
-     friends), and an external <use href="device.svg#lidArt"> renders into a shadow
-     tree that never sees this page's stylesheet — every colourway would come out
-     black. So: fetch it, inline it, then re-point the <use> elements at the defs that
-     have just arrived, because they resolved to nothing while it was missing. */
   fetch("device.svg")
     .then(function(r){ return r.text(); })
     .then(function(txt){
@@ -15,6 +9,16 @@
       var defs = holder.querySelector("svg");
       if (!defs) return;
       document.body.insertBefore(defs, document.body.firstChild);
+      var peerTxt = txt
+        .replace(/id="([\w-]+)"/g, 'id="$1-peer"')
+        .replace(/url\(#([\w-]+)\)/g, "url(#$1-peer)")
+        .replace(/href="#([\w-]+)"/g, 'href="#$1-peer"');
+      holder.innerHTML = peerTxt;
+      var peerDefs = holder.querySelector("svg");
+      if (peerDefs) {
+        peerDefs.classList.add("peer-defs");
+        document.body.insertBefore(peerDefs, defs.nextSibling);
+      }
       var uses = document.querySelectorAll("use");
       for (var i = 0; i < uses.length; i++) {
         var h = uses[i].getAttribute("href");
@@ -28,18 +32,8 @@
 (function(){
   "use strict";
 
-  /* Each step names its clip; the files live in site/media/. Nothing here needs a
-     manifest: if a clip is missing the video errors, stays hidden, and the drawn
-     screen underneath carries on doing the job. That is why the page ships before a
-     single frame has been recorded.
 
-     Record at 720x480 — the panel's native size — and the fit is exact. */
 
-  /* --------------------------------------------------------- colourway --- */
-
-  /* Every RG SP colourway is metallic, so each one is a light tint, a base and a
-     shade rather than a single hex. `etch` is the printed lettering and the speaker
-     holes, which have to flip to white once the shell goes black. */
   var SHELLS = [
     { name:"silver",     light:"#e2e5e9", base:"#b8bcc2", shade:"#7e838b", btn:"#c2c6cc", btnHi:"#e9ecf0", etch:"rgba(0,0,0,.46)" },
     { name:"pink",       light:"#f6d3dd", base:"#e6a6b8", shade:"#a76d7e", btn:"#dbd1d5", btnHi:"#f2eaed", etch:"rgba(0,0,0,.44)" },
@@ -47,9 +41,6 @@
     { name:"black",      light:"#5a5d64", base:"#34363b", shade:"#16171a", btn:"#3c3e43", btnHi:"#5c5f66", etch:"rgba(255,255,255,.42)" }
   ];
 
-  /* Random per load, the way the device you actually own was one of four in a bin.
-     `?shell=pink` pins it, which is how a particular colourway gets looked at on
-     purpose. */
   var want = (location.search.match(/[?&]shell=([^&]+)/) || [])[1];
   var shell = SHELLS[Math.floor(Math.random() * SHELLS.length)];
   if (want) {
@@ -67,31 +58,19 @@
   root.setProperty("--btn-hi",      shell.btnHi);
   root.setProperty("--etch",        shell.etch);
 
-  /* `?pose=flat` swaps the hero device to the straight-on pose the guide uses, so a
-     pose can be looked at without editing the page. */
   var pose = (location.search.match(/[?&]pose=(flat|hero)/) || [])[1];
   if (pose) {
-    var heroDev = document.querySelector(".hero-device .device");
-    if (heroDev) heroDev.className = "device pose-" + pose;
+    var heroDevEl = document.querySelector(".hero-device .device");
+    if (heroDevEl) heroDevEl.className = "device pose-" + pose;
   }
 
-  /* ------------------------------------------------------------- hero --- */
 
   var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  /* One clip on a loop. Held back until the lid has finished opening: the screen is on
-     the inside of it, so revealing any earlier just plays the thing into the back of a
-     shut lid. 1.9s is the animation's own 0.4s delay plus its 1.5s swing.
-
-     The element carries the clip's own first frame as its poster, so the reveal is on a
-     timer rather than on loadeddata. A slow connection then shows a true frame of slot at
-     the moment the lid opens instead of a black panel, and a clip that never arrives
-     leaves that frame up rather than nothing. play() before the data lands is fine — the
-     poster holds until there is a frame to paint over it. */
   var heroVid = document.querySelector(".hero-screen");
   if (heroVid) {
     if (reduced) {
-      heroVid.style.opacity = "1";        /* the poster, and no motion */
+      heroVid.style.opacity = "1";
     } else {
       setTimeout(function(){
         heroVid.style.opacity = "1";
@@ -103,152 +82,156 @@
     }
   }
 
-  /* ------------------------------------------------------------ guide --- */
 
   var vid   = document.querySelector(".guide-screen");
-  var gstage = document.querySelector(".guide-stage");
   var gdev  = document.querySelector(".guide-stage .device");
   var steps = Array.prototype.slice.call(document.querySelectorAll(".step"));
-  if (!vid || !steps.length) return;
+
+  var stage = gdev ? gdev.parentNode : null;
+  var peer = null, pvid = null;
+  if (gdev) {
+    peer = gdev.cloneNode(true);
+    peer.classList.add("is-peer");
+    peer.classList.remove("is-waiting", "is-shut", "is-swinging");
+    peer.setAttribute("aria-hidden", "true");
+    var others = SHELLS.filter(function(x){ return x !== shell; });
+    var their = others[Math.floor(Math.random() * others.length)];
+    var peerVars = { "light":their.light, "base":their.base, "shade":their.shade,
+                     "btn":their.btn, "btn-hi":their.btnHi };
+    for (var pk in peerVars) root.setProperty("--peer-" + pk, peerVars[pk]);
+    peer.style.setProperty("--shell-light", their.light);
+    peer.style.setProperty("--shell-base",  their.base);
+    peer.style.setProperty("--shell-shade", their.shade);
+    peer.style.setProperty("--btn",         their.btn);
+    peer.style.setProperty("--btn-hi",      their.btnHi);
+    peer.style.setProperty("--etch",        their.etch);
+    var peerUses = peer.querySelectorAll("use");
+    for (var pu = 0; pu < peerUses.length; pu++) {
+      peerUses[pu].setAttribute("href", peerUses[pu].getAttribute("href") + "-peer");
+    }
+    pvid = peer.querySelector("video");
+    pvid.classList.remove("guide-screen");
+    stage.appendChild(peer);
+  }
+
+  var pairOn = false, pairStarting = false;
+  function play(v){ var p = v.play(); if (p && p.catch) p.catch(function(){}); }
+  function pairReady(){ return vid.readyState >= 3 && pvid.readyState >= 3; }
+  function startPair(){
+    if (!pairOn || pairStarting || !pairReady()) return;
+    pairStarting = true;
+    vid.pause(); pvid.pause();
+    pvid.playbackRate = 1;
+    var left = 2, done = false;
+    function go(){
+      if (done || --left > 0) return;
+      done = true;
+      pairStarting = false;
+      if (!pairOn) return;
+      play(vid); play(pvid);
+    }
+    vid.addEventListener("seeked", go, { once:true });
+    pvid.addEventListener("seeked", go, { once:true });
+    vid.currentTime = 0; pvid.currentTime = 0;
+    setTimeout(function(){ left = 1; go(); }, 600);
+  }
+  if (vid && pvid) {
+    ["canplay", "canplaythrough"].forEach(function(e){
+      [vid, pvid].forEach(function(v){
+        v.addEventListener(e, function(){ if (vid.paused || pvid.paused) startPair(); });
+      });
+    });
+    vid.addEventListener("waiting", function(){ if (pairOn) pvid.pause(); });
+    pvid.addEventListener("waiting", function(){ if (pairOn) vid.pause(); });
+    vid.addEventListener("ended", function(){ if (pairOn) startPair(); });
+    vid.addEventListener("timeupdate", function(){
+      if (!pairOn || pairStarting || vid.paused) return;
+      if (pvid.paused) { play(pvid); return; }
+      var d = vid.currentTime - pvid.currentTime;
+      if (Math.abs(d) > 0.3) { startPair(); return; }
+      pvid.playbackRate = 1 + Math.max(-0.1, Math.min(0.1, d * 0.5));
+    });
+  }
+  function showPeer(clip){
+    if (!stage || !pvid) return;
+    stage.classList.toggle("is-pair", !!clip);
+    pairOn = !!clip && !reduced;
+    vid.loop = !pairOn;
+    if (!clip) { pvid.pause(); pvid.removeAttribute("src"); pvid.playbackRate = 1; return; }
+    pvid.poster = "media/" + clip.replace(/\.mp4$/, ".webp");
+    if (reduced) { pvid.removeAttribute("src"); return; }
+    if (pvid.getAttribute("src") !== "media/" + clip) {
+      pvid.src = "media/" + clip;
+      pvid.load();
+    }
+  }
 
   var current = null;
 
-  /* The lid's transition in the stylesheet. Kept in step by hand: a swing that outlasts this
-     shows the gap again at its tail. */
   var LID_SWING_MS = 1150;
   var swingTimer = null;
 
-  vid.loop = true;
-
-  /* Starting playback has to be something that can be asked for repeatedly and from any
-     direction, because a single attempt has too many ways to come to nothing: a snap that
-     crosses several steps calls load() again and aborts the play that was pending, and
-     while the hero's device is still travelling the guide's is display:none, so there is no
-     box to start playing in. Idempotent — a clip already running is left alone. */
   var playRetries = [];
   function ensurePlaying(){
-    if (reduced || !vid.getAttribute("src") || !vid.paused) return;
+    if (reduced || !vid || !vid.getAttribute("src") || !vid.paused) return;
+    if (pairOn) { startPair(); return; }
     var p = vid.play();
     if (p && p.catch) p.catch(function(){});
   }
-  /* Asked again on every signal that the element might now be able to start. */
-  vid.addEventListener("loadeddata", ensurePlaying);
-  vid.addEventListener("canplay", ensurePlaying);
-  vid.addEventListener("canplaythrough", ensurePlaying);
   function nudgePlayback(){
     for (var i = 0; i < playRetries.length; i++) clearTimeout(playRetries[i]);
     playRetries = [];
     ensurePlaying();
-    /* And again shortly after, for the cases no event covers: a play aborted by the next
-       load, or an element that had no box when it was first asked. */
     playRetries.push(setTimeout(ensurePlaying, 220), setTimeout(ensurePlaying, 800));
   }
-  /* Not hidden on error: the poster is a separate file and a real frame of the step, so a
-     clip that is missing or unplayable still leaves the right picture on the screen. */
-
-  /* Which layout is live. Both are wired up at once rather than torn down and rebuilt on
-     resize: the stacked panels are display:none when side by side, and an element with no
-     box never intersects, so their clips are never fetched. Crossing the breakpoint just
-     starts and stops satisfying the observers. */
-  var stacked = window.matchMedia("(max-width: 880px)");
-
-  /* Each stacked card owns its clip. Fetched a little before it arrives, played only while
-     it is actually on screen — six clips is 4MB, and one of them is 2MB on its own. Under
-     reduced motion nothing is fetched at all and the poster stays, which is a real frame
-     of the step either way. */
-  var cards = Array.prototype.slice.call(document.querySelectorAll(".step-panel video"));
-  if (cards.length && window.IntersectionObserver && !reduced) {
-    /* Two observers, because rootMargin skews intersectionRatio: with the root expanded, a
-       card sitting entirely off screen still reports a ratio of 1. Fetching wants the
-       margin so the clip is there before you arrive; playing wants the truth. */
-    var load = new IntersectionObserver(function(entries){
-      for (var i = 0; i < entries.length; i++) {
-        var v = entries[i].target, step;
-        if (!entries[i].isIntersecting || v.getAttribute("src")) continue;
-        step = v.parentNode.parentNode;
-        var clip = step && step.getAttribute("data-clip");
-        if (clip) { v.src = "media/" + clip; v.load(); }
-      }
-    }, { rootMargin: "400px 0px" });
-    var run = new IntersectionObserver(function(entries){
-      for (var i = 0; i < entries.length; i++) {
-        var v = entries[i].target;
-        if (entries[i].intersectionRatio >= .5) {
-          var pr = v.play();
-          if (pr && pr.catch) pr.catch(function(){});
-        } else if (!v.paused) {
-          v.pause();
-        }
-      }
-    }, { threshold: [0, .5] });
-    for (var ci = 0; ci < cards.length; ci++) { load.observe(cards[ci]); run.observe(cards[ci]); }
+  if (vid) {
+    vid.loop = !pairOn;
+    vid.addEventListener("loadeddata", ensurePlaying);
+    vid.addEventListener("canplay", ensurePlaying);
+    vid.addEventListener("canplaythrough", ensurePlaying);
   }
 
   function show(step){
-    /* Stacked, there is no pinned screen to drive and no dimming: every card stands on its
-       own. The dots still track, which is all pick() is for down there. */
-    if (stacked.matches) return;
-    if (step === current) return;
+    if (!vid || !step || step === current) return;
     current = step;
+    var at = 0;
     for (var i = 0; i < steps.length; i++) {
-      steps[i].classList.toggle("is-active", steps[i] === step);
+      var on = steps[i] === step;
+      steps[i].classList.toggle("is-active", on);
+      if (on) at = i;
     }
-    /* One step asks for the lid shut rather than a clip. Marked in the markup so
-       renaming the step's heading cannot quietly break it. */
+    if (stepAt) stepAt.textContent = String(at + 1);
+    if (prevBtn) prevBtn.disabled = at === 0;
+    if (nextBtn) nextBtn.disabled = at === steps.length - 1;
     if (gdev) {
       var wantShut = step.getAttribute("data-lid") === "shut";
-      /* Opening. For the first half of the swing the lid's front is turned away and culled,
-         so the back is the only face there is to see — but the back is only drawn while
-         shut, to keep it off the screen when the lid is open and at rest. Without this the
-         lid vanishes from the moment it starts opening until it comes past vertical. Hold
-         the back for the length of the swing, then drop it again. Nothing to hold under
-         reduced motion: there is no transition, so there is no gap to cover. */
       if (!wantShut && gdev.classList.contains("is-shut") && !reduced) {
         gdev.classList.add("is-swinging");
         clearTimeout(swingTimer);
         swingTimer = setTimeout(function(){ gdev.classList.remove("is-swinging"); }, LID_SWING_MS);
       }
-      if (wantShut && dir < 0) {
-        /* Arriving from below, you are coming back to a device you left closed, so it
-           should already BE shut rather than replay the swing. Killing the transition
-           for one frame is what makes it arrive shut instead of shutting; the reflow
-           read is there to stop the two class changes being batched into one, which
-           would animate anyway. */
-        gdev.classList.add("no-swing");
-        gdev.classList.add("is-shut");
-        void gdev.offsetWidth;
-        gdev.classList.remove("no-swing");
-      } else {
-        gdev.classList.toggle("is-shut", wantShut);
-      }
+      gdev.classList.toggle("is-shut", wantShut);
     }
 
+    showPeer(step.getAttribute("data-pair"));
+    var only = step.getAttribute("data-still");
+    if (only) {
+      vid.removeAttribute("src");
+      vid.load();
+      vid.poster = "media/" + only;
+      vid.style.opacity = "1";
+      return;
+    }
     var clip = step.getAttribute("data-clip");
     if (!clip) { vid.style.opacity = "0"; vid.removeAttribute("src"); return; }
-    /* Each clip ships a still of its own first frame beside it. It is the poster, so it
-       is what the screen shows until the clip has enough data to paint — and what it
-       keeps showing if the clip never arrives. */
     var still = "media/" + clip.replace(/\.mp4$/, ".webp");
     if (reduced) {
-      /* The still alone. Reduced motion loses the movement, not the picture. */
       if (vid.poster !== still) { vid.removeAttribute("src"); vid.poster = still; }
       vid.style.opacity = "1";
       return;
     }
-    /* Consecutive steps can name the same clip — the lid step closes on whatever the
-       step before it was already playing. Re-setting an identical src would reload and
-       restart it, so the picture would jump at the very moment the lid starts to swing.
-       Leaving it alone keeps the game running underneath the close. */
     var path = "media/" + clip;
     if (vid.getAttribute("src") === path) {
-      /* Same clip as the step before — the lid step closes on whatever was already running,
-         and re-setting the src would reload and restart it, so the picture would jump at the
-         moment the lid starts to swing. Leaving the src alone is right; leaving the rest of
-         the element alone is not. Leaving the guide hides the screen, and coming back to the
-         very same clip takes this path — so the opacity has to be put back, or the clip
-         plays on perfectly behind a screen that is still turned off. And playback needs
-         asking for again, since arriving from the other direction it may be sitting paused
-         with nothing left to fire an event. */
       vid.style.opacity = "1";
       nudgePlayback();
       return;
@@ -260,189 +243,172 @@
     nudgePlayback();
   }
 
-  /* Whichever section's centre is nearest the middle of the viewport is the one you
-     are on: it drives the clip, the step highlight and the dots from one measurement.
-     This began as an IntersectionObserver with a thin centre band, which is the tidier
-     idiom, but its callbacks are not dependable after a large instant scroll — the
-     step you jumped to could stay unlit. Measuring is deterministic: same answer at
-     any scroll position, arrived at by any route, in any browser. rAF-throttled, so
-     it costs one rect read per frame while scrolling and nothing at rest. */
-  /* One selector, document order, so adding a section means adding markup and a dot
-     and nothing else. Concatenating hand-picked lists meant every new section was two
-     places to forget. */
-  var sections = Array.prototype.slice.call(
-    document.querySelectorAll(".hero, .step, .reference, .faq, .endnote"));
-  var dots = Array.prototype.slice.call(document.querySelectorAll(".dots a"));
-  var ticking = false;
-  var lastY = window.pageYOffset || 0;
-  var dir = 1;                       /* 1 = moving down the page, -1 = moving up */
+  var stepList = document.querySelector(".guide-steps");
+  var prevBtn  = document.getElementById("step-prev");
+  var nextBtn  = document.getElementById("step-next");
+  var stepAt   = document.getElementById("step-at");
+  var stepOf   = document.getElementById("step-of");
+  if (stepList && steps.length) stepList.classList.add("is-live");
+  if (stepOf) stepOf.textContent = String(steps.length);
 
-  function clearSteps(){
-    if (stacked.matches) return;
-    for (var i = 0; i < steps.length; i++) steps[i].classList.remove("is-active");
-    current = null;
-    vid.style.opacity = "0";
-    /* The lid stays as the last step left it for as long as the device is still on
-       screen. Reaching the questions hands the page over to them while the shut device
-       is often still pinned above, and springing it open there reads as the page
-       glitching rather than as the guide ending. Reset only once the stage has gone —
-       coming back down then replays the close from the top, which is the point of it. */
-    if (gstage) {
-      var sr = gstage.getBoundingClientRect();
-      if (sr.bottom > 0 && sr.top < window.innerHeight) return;
-    }
-    if (gdev) {
-      if (gdev.classList.contains("is-shut") && !reduced) {
-        gdev.classList.add("is-swinging");
-        clearTimeout(swingTimer);
-        swingTimer = setTimeout(function(){ gdev.classList.remove("is-swinging"); }, LID_SWING_MS);
+  function stepBy(delta){
+    var at = steps.indexOf(current);
+    var to = at + delta;
+    if (at < 0 || to < 0 || to >= steps.length) return;
+    show(steps[to]);
+    setHash(steps[to].id);
+  }
+  if (prevBtn) prevBtn.addEventListener("click", function(){ stepBy(-1); });
+  if (nextBtn) nextBtn.addEventListener("click", function(){ stepBy(1); });
+
+  var guidePanel = document.getElementById("guide");
+  if (guidePanel) guidePanel.addEventListener("keydown", function(e){
+    if (e.target.closest("[role=tablist]")) return;
+    if (e.key === "ArrowLeft") { e.preventDefault(); stepBy(-1); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); stepBy(1); }
+  });
+
+
+  function wire(list){
+    var tabs = Array.prototype.slice.call(list.querySelectorAll("[role=tab]"));
+    var group = {
+      tabs: tabs,
+      panels: tabs.map(function(t){ return document.getElementById(t.getAttribute("aria-controls")); }),
+      select: function(tab, focus){
+        var i = tabs.indexOf(tab);
+        if (i < 0) return;
+        for (var k = 0; k < tabs.length; k++) {
+          var on = k === i;
+          tabs[k].setAttribute("aria-selected", on ? "true" : "false");
+          tabs[k].tabIndex = on ? 0 : -1;
+          if (group.panels[k]) group.panels[k].hidden = !on;
+        }
+        if (hero) hero.hidden = true;
+        if (tabs[i].scrollIntoView && list.scrollWidth > list.clientWidth + 1) {
+          try { tabs[i].scrollIntoView({ inline: "center", block: "nearest" }); } catch (e) {}
+        }
+        if (focus) tabs[i].focus();
       }
-      gdev.classList.remove("is-shut");
-    }
-  }
-
-  /* A step's own box is not where its words are. On a phone the stage is pinned across
-     the top of the screen and each step is its copy plus the gap to the next one, so the
-     box centre sits in that gap, well below the text — measuring it lit the step whose
-     copy had already gone behind the device. Measure first child to last child instead,
-     which is the copy itself in both layouts: on a wide screen the step is flex-centred,
-     so the two agree and nothing changes. */
-  function extentOf(el){
-    /* Stacked, a step is a whole card — panel and words together — and the dot should
-       follow the card. Side by side the step box is 70vh of mostly air with the copy
-       centred in it, so what matters is where the copy is. Measured from the heading
-       rather than from firstElementChild, which up there is the card's own panel: hidden,
-       and a hidden element measures as a zero rect at the top of the document. */
-    var h2 = !stacked.matches && el.classList.contains("step") && el.querySelector("h2");
-    if (!h2) {
-      var r = el.getBoundingClientRect();
-      return [r.top, r.bottom];
-    }
-    return [h2.getBoundingClientRect().top,
-            el.lastElementChild.getBoundingClientRect().bottom];
-  }
-
-  function pick(){
-    ticking = false;
-    travel();
-    var y = window.pageYOffset || 0;
-    if (y !== lastY) { dir = y > lastY ? 1 : -1; lastY = y; }
-    var h = window.innerHeight, best = -1, bestDist = Infinity;
-    for (var i = 0; i < sections.length; i++) {
-      var e = extentOf(sections[i]);
-      if (e[1] < 0 || e[0] > h) continue;
-      var d = Math.abs((e[0] + e[1]) / 2 - h / 2);
-      if (d < bestDist) { bestDist = d; best = i; }
-    }
-    if (best < 0) return;
-    for (var k = 0; k < dots.length; k++) dots[k].classList.toggle("is-on", k === best);
-    var sec = sections[best];
-    if (sec.classList.contains("step")) show(sec); else clearSteps();
-  }
-
-  /* ------------------------------------------------------- the handoff --- */
-
-  /* Side by side, the hero's device and the guide's are meant to read as one object. The
-     hero's leaves the flow, follows the scroll down and turns flat as it goes; the guide's
-     takes over the instant it lands, in the same place at the same size, so the swap has
-     nothing to show. Two elements, one device.
-
-     Geometry is measured rather than derived — where the hero's device sits, and where the
-     guide's sits once its stage is pinned — so it stays right whatever the layout does at
-     a given width. Stacked there is no handoff: the guide has no pinned device to hand to.
-     Reduced motion has none either; the two simply stay where they are. */
-  var heroWrap = document.querySelector(".hero-device");
-  var heroDev  = heroWrap && heroWrap.querySelector(".device");
-  var heroLid  = heroDev && heroDev.querySelector(".dv-lid");
-  var geo = null;
-
-  function measure(){
-    if (!heroWrap || !gdev || !gstage) return null;
-    /* The guide's device is display:none while it waits, and a collapsed box measures zero.
-       Stand it up for the length of the read. */
-    var waiting = gdev.classList.contains("is-waiting");
-    if (waiting) gdev.classList.remove("is-waiting");
-    var hw = heroWrap.getBoundingClientRect(), st = gstage.getBoundingClientRect();
-    var gW = gdev.offsetWidth, gH = gdev.offsetHeight, stW = gstage.offsetWidth;
-    if (waiting) gdev.classList.add("is-waiting");
-    return {
-      /* document coordinates, so they survive any scroll position */
-      fromLeft: hw.left,
-      fromTop:  hw.top + (window.pageYOffset || 0),
-      fromW:    heroWrap.offsetWidth,
-      /* where the guide's device comes to rest: centred in a stage pinned at the top */
-      toLeft:   st.left + (stW - gW) / 2,
-      toW:      gW,
-      toTop:    (window.innerHeight - gH) / 2,
-      /* the run: the hero's own height, which is exactly where the guide begins */
-      run:      document.querySelector(".hero").offsetHeight
     };
-  }
-
-  function rest(){
-    if (heroDev) heroDev.style.cssText = "";
-    if (heroLid) heroLid.style.transform = "";
-    if (heroWrap) heroWrap.style.removeProperty("--glow");
-    if (heroDev) heroDev.classList.remove("no-lid-anim");
-    if (gdev) gdev.classList.remove("is-waiting");
-  }
-
-  function travel(){
-    if (!heroDev || !gdev || stacked.matches || reduced) { rest(); return; }
-    if (!geo) geo = measure();
-    if (!geo || !geo.run) return;
-
-    var y = window.pageYOffset || 0;
-    var t = y / geo.run;
-    t = t < 0 ? 0 : t > 1 ? 1 : t;
-
-    if (t >= 1) {                       /* arrived: the guide's device has it from here */
-      /* display, not visibility, for the same reason the guide's device uses it: the flake
-         texture is an SVG filter and paints straight through a hidden ancestor. */
-      heroDev.style.display = "none";
-      if (gdev.classList.contains("is-waiting")) {
-        gdev.classList.remove("is-waiting");
-        /* The guide's device has only just been given a box. Anything asked of the clip
-           while it had none needs asking again. */
-        nudgePlayback();
-      }
-      return;
+    for (var i = 0; i < tabs.length; i++) {
+      (function(tab){
+        tab.addEventListener("click", function(){
+          group.select(tab, false);
+          setHash(tab.getAttribute("aria-controls"));
+        });
+      })(tabs[i]);
     }
-    gdev.classList.add("is-waiting");
-    heroDev.style.display = "";
-    if (t > 0) heroDev.classList.add("no-lid-anim");
-
-    /* Eased so it settles into the guide rather than arriving at full tilt. */
-    var k = t * t * (3 - 2 * t);
-    var lerp = function(a, b){ return a + (b - a) * k; };
-    var dw = lerp(geo.fromW, geo.toW);
-
-    heroDev.style.position = "fixed";
-    heroDev.style.zIndex = "20";
-    heroDev.style.left = lerp(geo.fromLeft, geo.toLeft) + "px";
-    /* Its resting place in the hero, not its scrolled-away one. Blending from a position
-       that is itself scrolling upward sent the device off the top of the screen and then
-       pulled it back down — a dip, not a swoop. Held against the viewport it simply glides
-       from where it stood to where it is going, while the page moves underneath. */
-    heroDev.style.top  = lerp(geo.fromTop, geo.toTop) + "px";
-    heroDev.style.width = dw + "px";
-    heroDev.style.setProperty("--dw", dw + "px");
-    heroWrap.style.setProperty("--glow", String(1 - k));
-    heroDev.style.transform =
-      "perspective(" + (dw * 2.5) + "px)" +
-      " rotateZ(" + (13 * (1 - k)) + "deg)" +
-      " rotateX(" + (6 * (1 - k)) + "deg)" +
-      " rotateY(" + (-27 * (1 - k)) + "deg)";
-    if (heroLid) heroLid.style.transform = "rotateX(" + (-22 * (1 - k)) + "deg)";
+    list.addEventListener("keydown", function(e){
+      var at = tabs.indexOf(document.activeElement);
+      if (at < 0) return;
+      var to = -1;
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") to = (at + 1) % tabs.length;
+      else if (e.key === "ArrowLeft" || e.key === "ArrowUp") to = (at - 1 + tabs.length) % tabs.length;
+      else if (e.key === "Home") to = 0;
+      else if (e.key === "End") to = tabs.length - 1;
+      if (to < 0) return;
+      e.preventDefault();
+      group.select(tabs[to], true);
+      setHash(tabs[to].getAttribute("aria-controls"));
+    });
+    return group;
   }
 
-  function onScroll(){
-    if (!ticking) { ticking = true; requestAnimationFrame(pick); }
+  var hero = document.getElementById("hero");
+  var groups = Array.prototype.slice.call(document.querySelectorAll("[role=tablist]")).map(wire);
+
+
+  var menuBtn = document.getElementById("menu-btn");
+  var tabsNav = document.getElementById("section-tabs");
+  function setMenu(open){
+    if (!menuBtn || !tabsNav) return;
+    tabsNav.classList.toggle("is-open", open);
+    menuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  if (menuBtn && tabsNav) {
+    menuBtn.addEventListener("click", function(e){
+      e.stopPropagation();
+      setMenu(!tabsNav.classList.contains("is-open"));
+    });
+    tabsNav.addEventListener("click", function(){ setMenu(false); });
+    document.addEventListener("click", function(e){
+      if (e.target !== menuBtn && !menuBtn.contains(e.target) && !tabsNav.contains(e.target)) {
+        setMenu(false);
+      }
+    });
+    document.addEventListener("keydown", function(e){
+      if (e.key !== "Escape" || !tabsNav.classList.contains("is-open")) return;
+      setMenu(false);
+      menuBtn.focus();
+    });
   }
 
-  window.addEventListener("scroll", onScroll, { passive: true });
-  window.addEventListener("resize", function(){ geo = null; onScroll(); }, { passive: true });
-  /* The measurement needs the artwork's real height, which arrives with device.svg. */
-  window.addEventListener("load", function(){ geo = null; onScroll(); });
-  pick();
+  function showHero(){
+    var grp = groups[0];
+    if (!grp) return;
+    for (var k = 0; k < grp.tabs.length; k++) {
+      grp.tabs[k].setAttribute("aria-selected", "false");
+      grp.tabs[k].tabIndex = k === 0 ? 0 : -1;
+    }
+    for (var q = 0; q < grp.panels.length; q++) {
+      if (grp.panels[q]) grp.panels[q].hidden = true;
+    }
+    if (hero) hero.hidden = false;
+  }
+
+  var mark = document.querySelector(".mast-mark");
+  if (mark) mark.addEventListener("click", function(e){
+    e.preventDefault();
+    showHero();
+    setHash("hero");
+  });
+
+
+  var routing = false;
+  function setHash(id){
+    if (!id) return;
+    routing = true;
+    if (history.replaceState) history.replaceState(null, "", "#" + id);
+    else location.hash = id;
+    routing = false;
+  }
+
+  function reveal(id){
+    var el = id && document.getElementById(id);
+    if (!el) return false;
+    if (el === hero) { showHero(); return true; }
+    var chain = [];
+    for (var node = el; node && node !== document.body; node = node.parentNode) {
+      for (var g = 0; g < groups.length; g++) {
+        var at = groups[g].panels.indexOf(node);
+        if (at >= 0) chain.unshift({ group: groups[g], tab: groups[g].tabs[at] });
+      }
+    }
+    for (var c = 0; c < chain.length; c++) chain[c].group.select(chain[c].tab, false);
+    if (el.classList.contains("step")) show(el);
+    return true;
+  }
+
+  window.addEventListener("hashchange", function(){
+    if (routing) return;
+    reveal(location.hash.slice(1));
+  });
+
+  if (steps.length) show(steps[0]);
+  reveal(location.hash.slice(1));
+
+  var say = document.querySelector(".say");
+  var voice = document.getElementById("say-slot");
+  if (say && voice) {
+    say.addEventListener("click", function(){
+      voice.currentTime = 0;
+      var playing = voice.play();
+      if (playing && playing.catch) playing.catch(function(){});
+    });
+    voice.addEventListener("play", function(){ say.classList.add("is-playing"); });
+    ["pause", "ended"].forEach(function(e){
+      voice.addEventListener(e, function(){ say.classList.remove("is-playing"); });
+    });
+  }
+
 })();
